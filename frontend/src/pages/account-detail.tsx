@@ -280,10 +280,12 @@ export default function AccountDetailPage() {
   const [filterFrom, setFilterFrom] = useState(defaultFrom)
   const [filterTo, setFilterTo] = useState(defaultTo)
   const [showPrimary, setShowPrimary] = useState(false)
+  const [popoverOpen, setPopoverOpen] = useState(false)
+
   const filterTouched = useRef(false)
   const handleFilterFromChange = (v: string) => { filterTouched.current = true; setFilterFrom(v) }
   const handleFilterToChange = (v: string) => { filterTouched.current = true; setFilterTo(v) }
-  const shiftCycleBy = (direction: -1 | 1) => {
+  const shiftCycleBy = (direction: -1 | 1) => { 
     filterTouched.current = true
     // Bill-aware nav: step through the bills list when we have it, so prev/next
     // mirrors the bank's actual statements (handles dynamic close days).
@@ -477,7 +479,7 @@ export default function AccountDetailPage() {
       ref = new Date(parseISO(c.start + 'T00:00:00').getTime() - 86400000)
     }
     return cycles
-  }, [account, billsAsc])
+  }, [account, billsAsc, filterTo, activeBill, isInProgressCycle])
 
   const timelineQueries = useQueries({
     queries: timelineCycles.map(c => ({
@@ -825,38 +827,7 @@ export default function AccountDetailPage() {
               >
                 <ChevronLeft size={16} />
               </button>
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center gap-2 min-w-[140px] border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer capitalize"
-                  >
-                    {activeBill
-                      ? format(parseISO(activeBill.due_date + 'T00:00:00'), 'MMM yyyy', {
-                          locale: resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language),
-                        })
-                      : creditCardCycleLabel(filterTo, account?.payment_due_day, i18n.language)}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="center" className="w-auto p-3 space-y-3">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">{t('transactions.from')}</Label>
-                    <DatePickerInput
-                      value={filterFrom}
-                      onChange={handleFilterFromChange}
-                      placeholder={t('transactions.from')}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">{t('transactions.to')}</Label>
-                    <DatePickerInput
-                      value={filterTo}
-                      onChange={handleFilterToChange}
-                      placeholder={t('transactions.to')}
-                    />
-                  </div>
-                </PopoverContent>
-              </Popover>
+              <CreditCardDateRangePicker from={filterFrom} to={filterTo} onApply={handleFilterFromChange} onApplyTo={handleFilterToChange} account={account} activeBill={activeBill} />
               <button
                 type="button"
                 className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:border-border hover:text-foreground transition-all"
@@ -1502,6 +1473,55 @@ export default function AccountDetailPage() {
         />
       )}
     </div>
+  )
+}
+
+function CreditCardDateRangePicker({ from, to, onApply, onApplyTo, account, activeBill }: { from: string, to: string, onApply: (from: string) => void, onApplyTo: (to: string) => void, account: any, activeBill: CreditCardBill | null }) {
+  const { t, i18n } = useTranslation()
+  const [localFrom, setLocalFrom] = useState(from)
+  const [localTo, setLocalTo] = useState(to)
+  const [popoverOpen, setPopoverOpen] = useState(false)
+  const dateFnsLocale = resolveDateFnsLocale(i18n.resolvedLanguage ?? i18n.language)
+
+  useEffect(() => {
+    setLocalFrom(from)
+    setLocalTo(to)
+  }, [from, to, popoverOpen])
+
+  const handleApply = () => {
+    onApply(localFrom)
+    onApplyTo(localTo)
+    setPopoverOpen(false)
+  }
+
+  return (
+    <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center justify-center gap-2 min-w-[140px] border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground hover:bg-muted/50 transition-all cursor-pointer capitalize"
+        >
+          {activeBill
+            ? format(parseISO(activeBill.due_date + 'T00:00:00'), 'MMM yyyy', {
+                locale: dateFnsLocale,
+              })
+            : creditCardCycleLabel(to, account?.payment_due_day, i18n.language)}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="w-auto p-3 space-y-3">
+        <div className="space-y-1.5">
+          <Label className="text-xs">{t('transactions.from')}</Label>
+          <DatePickerInput value={localFrom} onChange={setLocalFrom} placeholder={t('transactions.from')} />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">{t('transactions.to')}</Label>
+          <DatePickerInput value={localTo} onChange={setLocalTo} placeholder={t('transactions.to')} />
+        </div>
+        <div className="flex justify-end">
+          <Button size="sm" onClick={handleApply}>{t('common.apply')}</Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 
