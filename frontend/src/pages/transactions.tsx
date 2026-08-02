@@ -452,7 +452,24 @@ export default function TransactionsPage() {
   const invalidateAfterTxMutation = () => invalidateFinancialQueries(queryClient)
 
   const createMutation = useMutation({
-    mutationFn: async (payload: { tx: Partial<Transaction>; recurringData?: { frequency: string; end_date?: string }; pendingFiles?: File[]; action?: SaveAction }) => {
+    mutationFn: async (payload: { tx: Partial<Transaction>; recurringData?: { frequency: string; end_date?: string }; pendingFiles?: File[]; action?: SaveAction; installmentData?: { total_installments: number; frequency: string } }) => {
+      if (payload.installmentData) {
+        const created = await transactions.createInstallmentPlan({
+          description: payload.tx.description!,
+          account_id: payload.tx.account_id!,
+          category_id: payload.tx.category_id || undefined,
+          payee_id: payload.tx.payee_id || undefined,
+          currency: payload.tx.currency ?? userCurrency,
+          notes: payload.tx.notes || undefined,
+          type: payload.tx.type!,
+          amount: payload.tx.amount!,
+          total_installments: payload.installmentData.total_installments,
+          first_installment_date: payload.tx.date!,
+          frequency: payload.installmentData.frequency as 'monthly' | 'weekly' | 'yearly',
+          is_ignored: payload.tx.is_ignored,
+        })
+        return created[0]
+      }
       const created = await transactions.create(payload.tx)
       if (payload.recurringData) {
         await recurring.create({
@@ -478,7 +495,11 @@ export default function TransactionsPage() {
     onSuccess: (_created, variables) => {
       invalidateAfterTxMutation()
       queryClient.invalidateQueries({ queryKey: ['recurring'] })
-      toast.success(t('transactions.created'))
+      if (variables.installmentData) {
+        toast.success(t('transactions.installmentPlanCreated', { count: variables.installmentData.total_installments }))
+      } else {
+        toast.success(t('transactions.created'))
+      }
       if (variables.action === 'saveAndNew') {
         setDuplicateDraft(null)
         setFormResetKey(k => k + 1)
@@ -779,9 +800,10 @@ export default function TransactionsPage() {
     recurringData?: { frequency: string; end_date?: string },
     pendingFiles?: File[],
     action?: SaveAction,
+    installmentData?: { total_installments: number; frequency: string },
   ) => {
     if (!editingTx) {
-      createMutation.mutate({ tx: data, recurringData, pendingFiles, action })
+      createMutation.mutate({ tx: data, recurringData, pendingFiles, action, installmentData })
       return
     }
 

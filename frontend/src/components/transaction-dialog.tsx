@@ -109,7 +109,7 @@ export function TransactionDialog({
   categoryGroups: CategoryGroup[]
   accounts: { id: string; name: string; type?: string }[]
   recurringMatch?: RecurringTransaction
-  onSave: (data: Partial<Transaction>, recurringData?: { frequency: string; end_date?: string }, pendingFiles?: File[], action?: SaveAction) => void
+  onSave: (data: Partial<Transaction>, recurringData?: { frequency: string; end_date?: string }, pendingFiles?: File[], action?: SaveAction, installmentData?: { total_installments: number; frequency: string }) => void
   onDelete?: () => void
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
@@ -325,7 +325,7 @@ function TransactionForm({
   categoryGroups: CategoryGroup[]
   accounts: { id: string; name: string; type?: string }[]
   recurringMatch?: RecurringTransaction
-  onSave: (data: Partial<Transaction>, recurringData?: { frequency: string; end_date?: string }, pendingFiles?: File[], action?: SaveAction) => void
+  onSave: (data: Partial<Transaction>, recurringData?: { frequency: string; end_date?: string }, pendingFiles?: File[], action?: SaveAction, installmentData?: { total_installments: number; frequency: string }) => void
   onDelete?: () => void
   onUnlinkTransfer?: (pairId: string) => void
   onIgnoreChanged?: () => void
@@ -378,6 +378,9 @@ function TransactionForm({
   const [isRecurring, setIsRecurring] = useState(false)
   const [frequency, setFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly')
   const [endDate, setEndDate] = useState('')
+  const [isInstallment, setIsInstallment] = useState(false)
+  const [installmentCount, setInstallmentCount] = useState('')
+  const [installmentFrequency, setInstallmentFrequency] = useState<'monthly' | 'weekly' | 'yearly'>('monthly')
   // Optional split-with-group payload. `null` = leave splits as-is on
   // update, or no splits on create. The dedicated section component
   // owns its own UI state and surfaces a normalized payload here.
@@ -670,7 +673,10 @@ function TransactionForm({
         const recurringData = isCreating && isRecurring
           ? { frequency, end_date: endDate || undefined }
           : undefined
-        onSave(txData, recurringData, isCreating && pendingFiles.length > 0 ? pendingFiles : undefined, action)
+        const installmentData = isCreating && isInstallment
+          ? { total_installments: parseInt(installmentCount, 10), frequency: installmentFrequency }
+          : undefined
+        onSave(txData, recurringData, isCreating && !isInstallment && pendingFiles.length > 0 ? pendingFiles : undefined, action, installmentData)
       }}
       className={cn(
         // Always a bounded flex column; the DialogContent caps the overall
@@ -764,7 +770,7 @@ function TransactionForm({
       <div className="grid grid-cols-3 gap-4">
         <div className="space-y-2">
           <div className="flex items-center justify-between min-h-5">
-            <Label>{t('transactions.amount')}</Label>
+            <Label>{isInstallment ? t('transactions.amountPerInstallment') : t('transactions.amount')}</Label>
             {canHideAmounts && (
               <button
                 type="button"
@@ -990,7 +996,7 @@ function TransactionForm({
           onPreviewChange={onPreviewChange}
           activePreviewId={activePreviewId}
         />
-      ) : isCreating && (
+      ) : isCreating && !isInstallment && (
         <PendingAttachmentsSection
           files={pendingFiles}
           dragOver={pendingDragOver}
@@ -1006,13 +1012,13 @@ function TransactionForm({
       )}
 
       {/* Recurring toggle — only shown when creating non-synced */}
-      {isCreating && !isSynced && (
+      {isCreating && !isSynced && !isInstallment && (
         <div className="space-y-3 border rounded-md p-3">
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={isRecurring}
-              onChange={(e) => setIsRecurring(e.target.checked)}
+              onChange={(e) => { setIsRecurring(e.target.checked); if (e.target.checked) setIsInstallment(false) }}
               className="rounded border-gray-300"
             />
             <span className="text-sm font-medium">{t('transactions.makeRecurring')}</span>
@@ -1040,6 +1046,55 @@ function TransactionForm({
                   className="w-full justify-start"
                 />
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Installment plan toggle — only shown when creating non-synced */}
+      {isCreating && !isSynced && !isRecurring && (
+        <div className="space-y-3 border rounded-md p-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={isInstallment}
+              onChange={(e) => { setIsInstallment(e.target.checked); if (e.target.checked) setIsRecurring(false) }}
+              className="rounded border-gray-300"
+            />
+            <span className="text-sm font-medium">{t('transactions.splitIntoInstallments')}</span>
+          </label>
+          {isInstallment && (
+            <div className="grid grid-cols-2 gap-4 pt-1">
+              <div className="space-y-2">
+                <Label>{t('transactions.installmentCount')}</Label>
+                <Input
+                  type="number"
+                  min="2"
+                  max="360"
+                  value={installmentCount}
+                  onChange={(e) => setInstallmentCount(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>{t('recurring.frequency')}</Label>
+                <select
+                  className="w-full border border-border rounded-md px-3 py-2 text-sm bg-background focus:outline-none focus-visible:ring-ring/30 focus-visible:ring-[2px]"
+                  value={installmentFrequency}
+                  onChange={(e) => setInstallmentFrequency(e.target.value as 'monthly' | 'weekly' | 'yearly')}
+                >
+                  <option value="monthly">{t('recurring.monthly')}</option>
+                  <option value="weekly">{t('recurring.weekly')}</option>
+                  <option value="yearly">{t('recurring.yearly')}</option>
+                </select>
+              </div>
+              {amount && installmentCount && (
+                <div className="col-span-2 text-xs text-muted-foreground">
+                  {t('transactions.installmentTotalPreview', {
+                    count: parseInt(installmentCount, 10),
+                    total: (parseFloat(amount) * parseInt(installmentCount, 10)).toFixed(2),
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
