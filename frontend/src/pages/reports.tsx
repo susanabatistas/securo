@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useDisplayLocale } from '@/hooks/use-display-locale'
 import { useQuery } from '@tanstack/react-query'
@@ -49,6 +49,21 @@ const SLICE_COLORS = [
 ]
 const OTHER_SLICE_COLOR = '#9CA3AF'
 
+// Net-worth breakdown keys that render as negative on the trend chart.
+const NEGATIVE_SERIES = new Set(['liabilities'])
+
+// Composition keys that are summary rows, not actual groups to chart.
+const EXCLUDED_COMPOSITION_KEYS = new Set(['netIncome', 'startingBalance', 'endingBalance'])
+
+// Normalize a breakdown key to its composition group. Cash flow exposes its
+// income/expense breakdowns under projected* keys, but composition items are
+// tagged with the plain group, so the two must be reconciled to line up.
+function groupOfBreakdownKey(key: string): string {
+  return key === 'projectedIncome' ? 'income'
+    : key === 'projectedExpenses' ? 'expenses'
+      : key
+}
+
 function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
   return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value)
 }
@@ -73,6 +88,9 @@ const HISTORICAL_RANGE_OPTIONS: readonly RangeOption[] = [
   { key: 'ytd', months: 12, period: 'ytd' },
   { key: '1y', months: 12 },
   { key: '2y', months: 24 },
+  { key: '3y', months: 36 },
+  { key: '5y', months: 60 },
+  { key: '10y', months: 120 }
 ]
 
 const FORWARD_RANGE_OPTIONS: readonly RangeOption[] = [
@@ -119,6 +137,9 @@ const RANGE_LABELS: Record<string, string> = {
   ytd: 'rangeYtd',
   '12m': 'range12m',
   '2y': 'range2y',
+  '3y': 'range3y',
+  '5y': 'range5y',
+  '10y': 'range10y',
 }
 
 interface ReportTab {
@@ -216,9 +237,13 @@ export default function ReportsPage() {
   // The boundary point is duplicated in both series so the line visually
   // connects without a gap.
   const forecastStart = meta?.forecast_start_date ?? null
-  const NEGATIVE_SERIES = new Set(['liabilities'])
 
-  const chartData = trend.map((dp) => {
+  // Memoized below this point: these derived arrays feed Recharts, which
+  // bails out on unchanged props by reference. Recomputing them (and handing
+  // Recharts a brand-new array) on every render — including renders caused by
+  // unrelated state like sparkline pagination — forced a full chart re-render
+  // on every click anywhere on the page.
+  const chartData = useMemo(() => trend.map((dp) => {
     const isPast = forecastStart ? dp.date < forecastStart : false
     const isBoundary = forecastStart ? dp.date === forecastStart : false
     const breakdowns = meta?.type === 'net_worth'
@@ -232,36 +257,42 @@ export default function ReportsPage() {
       valueForecast: !isPast ? dp.value : null,
       ...breakdowns,
     } as Record<string, string | number | null>
-  })
+  }), [trend, forecastStart, meta?.type])
 
   const allBreakdowns = summary?.breakdowns ?? []
-  const breakdownData = allBreakdowns.filter((b) => b.value > 0)
+  const breakdownData = useMemo(() => allBreakdowns.filter((b) => b.value > 0), [allBreakdowns])
 
-  const colorMap: Record<string, string> = {}
-  for (const b of allBreakdowns) {
-    colorMap[b.key] = b.color
-  }
+  const colorMap: Record<string, string> = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const b of allBreakdowns) {
+      map[b.key] = b.color
+    }
+    return map
+  }, [allBreakdowns])
 
-  const snapshotTrendPoint = selectedDate
-    ? (trend.find((dp) => dp.date === selectedDate) ?? null)
-    : null
+  const snapshotTrendPoint = useMemo(
+    () => (selectedDate ? (trend.find((dp) => dp.date === selectedDate) ?? null) : null),
+    [selectedDate, trend],
+  )
   const isHistoricalSnapshot =
     snapshotTrendPoint !== null &&
     selectedDate !== trend[trend.length - 1]?.date
 
-  const snapshotBreakdownData = snapshotTrendPoint
-    ? Object.entries(snapshotTrendPoint.breakdowns)
-        .map(([key, rawValue]) => {
-          const orig = allBreakdowns.find((b) => b.key === key)
-          return {
-            key,
-            label: orig?.label ?? key,
-            value: Math.abs(rawValue as number),
-            color: orig?.color ?? '#6366F1',
-          }
-        })
-        .filter((b) => b.value > 0)
-    : null
+  const snapshotBreakdownData = useMemo(() => (
+    snapshotTrendPoint
+      ? Object.entries(snapshotTrendPoint.breakdowns)
+          .map(([key, rawValue]) => {
+            const orig = allBreakdowns.find((b) => b.key === key)
+            return {
+              key,
+              label: orig?.label ?? key,
+              value: Math.abs(rawValue as number),
+              color: orig?.color ?? '#6366F1',
+            }
+          })
+          .filter((b) => b.value > 0)
+      : null
+  ), [snapshotTrendPoint, allBreakdowns])
 
   const compositionBreakdownData = snapshotBreakdownData ?? breakdownData
 
@@ -287,45 +318,34 @@ export default function ReportsPage() {
       : ['summary', 'detailed'] as const
 
   // Which breakdown groups are visible in each toggle state. null = show all.
-  const activeCompositionGroups: Set<string> | null = (() => {
+  const activeCompositionGroups: Set<string> | null = useMemo(() => {
     if (compositionView === 'assetsAndAccounts') return new Set(['accounts', 'assets'])
     if (compositionView === 'liabilities') return new Set(['liabilities'])
     if (compositionView === 'byIncome') return new Set(['income'])
     if (compositionView === 'byExpenses') return new Set(['expenses'])
     return null
-  })()
-
-
-  // Normalize a breakdown key to its composition group. Cash flow exposes its
-  // income/expense breakdowns under projected* keys, but composition items are
-  // tagged with the plain group, so the two must be reconciled to line up.
-  const groupOf = (key: string) =>
-    key === 'projectedIncome' ? 'income'
-      : key === 'projectedExpenses' ? 'expenses'
-        : key
+  }, [compositionView])
 
   // Inner ring — summary view (high-level breakdown), filtered by toggle state for net_worth
-  const innerDonutData = (() => {
-    const excludedKeys = new Set(['netIncome', 'startingBalance', 'endingBalance'])
-    return compositionBreakdownData
-      .filter((b) => !excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key))))
+  const innerDonutData = useMemo(() => (
+    compositionBreakdownData
+      .filter((b) => !EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key))))
       .map((b) => ({
         name: t(`reports.${b.key}`, { defaultValue: b.label }),
         value: b.value,
         color: b.color,
       }))
-  })()
+  ), [compositionBreakdownData, activeCompositionGroups, t])
 
   const activeComposition = snapshotTrendPoint?.composition ?? composition
 
   // Build a stable key → color map from the full composition range (never the
   // snapshot), sorted the same way compositionDetail sorts, so colors don't
   // shift when switching between dates.
-  const netWorthColorMap = (() => {
-    const excludedKeys = new Set(['netIncome', 'startingBalance', 'endingBalance'])
+  const netWorthColorMap = useMemo(() => {
     const groupOrder = breakdownData
-      .filter((b) => !excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key))))
-      .map((b) => groupOf(b.key))
+      .filter((b) => !EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key))))
+      .map((b) => groupOfBreakdownKey(b.key))
     const activeGroups = new Set(groupOrder)
     const sorted = [...composition]
       .filter((c) => activeGroups.has(c.group))
@@ -338,20 +358,19 @@ export default function ReportsPage() {
     const map = new Map<string, string>()
     sorted.forEach((c, i) => map.set(c.key, SLICE_COLORS[i % SLICE_COLORS.length]))
     return map
-  })()
+  }, [breakdownData, activeCompositionGroups, composition])
 
   // Full detail — every holding in the active group(s), largest first, labelled
   // and coloured. The donut draws only the top slice of this; the legend popover
   // lists all of it. Net worth items get a distinct palette (the long tail falls
   // back to the neutral colour); income/expense items keep the user's category colour.
-  const compositionDetail = (() => {
+  const compositionDetail = useMemo(() => {
     if (activeComposition.length === 0) return []
 
-    const excludedKeys = new Set(['netIncome', 'startingBalance', 'endingBalance'])
     const activeGroups = new Set(
       compositionBreakdownData
-        .filter((b) => !excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key))))
-        .map((b) => groupOf(b.key))
+        .filter((b) => !EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key))))
+        .map((b) => groupOfBreakdownKey(b.key))
     )
 
     const itemLabel = (c: { label: string; key: string; group: string }) => {
@@ -368,8 +387,8 @@ export default function ReportsPage() {
     }
 
     const groupOrder = compositionBreakdownData
-      .filter((b) => !excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key))))
-      .map((b) => groupOf(b.key))
+      .filter((b) => !EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key))))
+      .map((b) => groupOfBreakdownKey(b.key))
 
     return activeComposition
       .filter((c) => activeGroups.has(c.group))
@@ -385,27 +404,26 @@ export default function ReportsPage() {
         color: activeTab === 'net_worth' ? (netWorthColorMap.get(c.key) ?? OTHER_SLICE_COLOR) : c.color,
         group: c.group,
       }))
-  })()
+  }, [activeComposition, compositionBreakdownData, activeCompositionGroups, activeTab, netWorthColorMap, t])
 
   // Outer ring — items above 3 % of total get their own slice; everything else
   // per group folds into one "Other <Group>" slice. Outer arcs are anchored to
   // inner ring values so per-item rounding never misaligns the two rings.
-  const outerDonutData = (() => {
+  const outerDonutData = useMemo(() => {
     if (compositionDetail.length === 0) return []
 
-    const excludedKeys = new Set(['netIncome', 'startingBalance', 'endingBalance'])
     const innerGroups = [
       ...new Set(
         compositionBreakdownData
-          .filter((b) => !excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key))))
-          .map((b) => groupOf(b.key))
+          .filter((b) => !EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key))))
+          .map((b) => groupOfBreakdownKey(b.key))
       ),
     ]
 
     const innerGroupValue = new Map<string, number>()
     for (const b of compositionBreakdownData) {
-      if (!excludedKeys.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOf(b.key)))) {
-        const g = groupOf(b.key)
+      if (!EXCLUDED_COMPOSITION_KEYS.has(b.key) && (!activeCompositionGroups || activeCompositionGroups.has(groupOfBreakdownKey(b.key)))) {
+        const g = groupOfBreakdownKey(b.key)
         innerGroupValue.set(g, (innerGroupValue.get(g) ?? 0) + b.value)
       }
     }
@@ -454,7 +472,7 @@ export default function ReportsPage() {
     }
 
     return result
-  })()
+  }, [compositionDetail, compositionBreakdownData, activeCompositionGroups, t])
 
   return (
     <div>
@@ -1251,18 +1269,29 @@ export default function ReportsPage() {
                   )
                 }
                 const totalPages = Math.ceil(allGroupItems.length / 6)
-                const pages = Array.from({ length: totalPages }, (_, i) =>
-                  allGroupItems.slice(i * 6, i * 6 + 6)
+                // Only mount the current page plus its immediate neighbors —
+                // navigation is prev/next only (never a direct page jump), so
+                // this keeps the slide animation while capping live Recharts
+                // instances at 3 pages instead of mounting all of them (each
+                // page is its own set of AreaChart + ResizeObserver instances).
+                const windowStart = Math.max(0, sparklinePage - 1)
+                const windowEnd = Math.min(totalPages - 1, sparklinePage + 1)
+                const visiblePages = Array.from(
+                  { length: windowEnd - windowStart + 1 },
+                  (_, i) => {
+                    const pageIdx = windowStart + i
+                    return { pageIdx, items: allGroupItems.slice(pageIdx * 6, pageIdx * 6 + 6) }
+                  }
                 )
                 return (
                   <div
                     className="flex"
                     style={{
-                      transform: `translateX(-${sparklinePage * 100}%)`,
+                      transform: `translateX(-${(sparklinePage - windowStart) * 100}%)`,
                       transition: 'transform 300ms cubic-bezier(0.4, 0, 0.2, 1)',
                     }}
                   >
-                    {pages.map((pageItems, pageIdx) => (
+                    {visiblePages.map(({ pageIdx, items: pageItems }) => (
                       <div
                         key={pageIdx}
                         className="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full shrink-0 px-4"
