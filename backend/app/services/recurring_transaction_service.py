@@ -1,6 +1,5 @@
-import calendar
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import or_, select
@@ -13,6 +12,7 @@ from app.models.transaction import Transaction
 from app.schemas.recurring_transaction import RecurringTransactionCreate, RecurringTransactionUpdate
 from app.services import recurring_match_service
 from app.services.credit_card_service import apply_effective_date
+from app.services.date_stepping import advance_date
 from app.services.fx_rate_service import stamp_primary_amount
 
 
@@ -65,7 +65,7 @@ async def create_recurring_transaction(
     await _verify_account_in_workspace(session, workspace_id, data.account_id)
     next_occ = data.start_date
     if data.skip_first:
-        next_occ = _advance_date(
+        next_occ = advance_date(
             data.start_date, data.frequency,
             intended_day=data.day_of_month or data.start_date.day,
         )
@@ -134,32 +134,6 @@ async def delete_recurring_transaction(
     return True
 
 
-def _advance_date(
-    current: date, frequency: str, intended_day: Optional[int] = None,
-) -> date:
-    """Advance a date by the given frequency.
-
-    For monthly/yearly, ``intended_day`` is the day the user actually wants
-    (e.g. 31). We cap it to the target month's length so Feb clamps to 28/29,
-    but subsequent months recover to 31/30 instead of sticking at 28.
-    Falls back to ``current.day`` when not provided."""
-    if frequency == "weekly":
-        return current + timedelta(weeks=1)
-    target_day = intended_day if intended_day else current.day
-    if frequency == "yearly":
-        year = current.year + 1
-        day = min(target_day, calendar.monthrange(year, current.month)[1])
-        return date(year, current.month, day)
-    # monthly (default)
-    month = current.month + 1
-    year = current.year
-    if month > 12:
-        month = 1
-        year += 1
-    day = min(target_day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
-
-
 def get_occurrences_in_range(
     start: date, frequency: str, end_date: Optional[date],
     range_start: date, range_end: date,
@@ -174,13 +148,13 @@ def get_occurrences_in_range(
     while current < range_start:
         if end_date and current > end_date:
             return occurrences
-        current = _advance_date(current, frequency, intended_day=day)
+        current = advance_date(current, frequency, intended_day=day)
     # Collect occurrences within range
     while current < range_end:
         if end_date and current > end_date:
             break
         occurrences.append(current)
-        current = _advance_date(current, frequency, intended_day=day)
+        current = advance_date(current, frequency, intended_day=day)
         if len(occurrences) > 200:  # safety limit
             break
     return occurrences
@@ -251,7 +225,7 @@ async def generate_pending(
                 count += 1
 
             # Advance to next occurrence
-            recurring.next_occurrence = _advance_date(
+            recurring.next_occurrence = advance_date(
                 recurring.next_occurrence, recurring.frequency,
                 intended_day=recurring.day_of_month or recurring.start_date.day,
             )
