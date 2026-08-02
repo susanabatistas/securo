@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
+from app.services.date_stepping import advance_date
 
 # Description-similarity bar for accepting a link. Matches the established
 # bank-sync fuzzy-merge threshold (connection_service._fuzzy_match_manual).
@@ -179,16 +180,13 @@ def advance_past(recurring: RecurringTransaction, fulfilled_date: date) -> None:
     for early charges (e.g. a Jan 8 charge for a Jan 10 occurrence), and
     generate_pending would then re-create that occurrence as a duplicate.
 
-    Deactivates the bill if it advances beyond its end_date. Lazy-imports the
-    date helper to avoid a circular import with recurring_transaction_service.
+    Deactivates the bill if it advances beyond its end_date.
     """
-    from app.services.recurring_transaction_service import _advance_date
-
     intended_day = recurring.day_of_month or recurring.start_date.day
     target = max(fulfilled_date, recurring.next_occurrence)
     guard = 0
     while recurring.next_occurrence <= target and guard < 500:
-        recurring.next_occurrence = _advance_date(
+        recurring.next_occurrence = advance_date(
             recurring.next_occurrence, recurring.frequency, intended_day=intended_day
         )
         guard += 1
