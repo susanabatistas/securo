@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, memo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -56,12 +56,30 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 
-function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
-  try {
-    return new Intl.NumberFormat(locale, { style: 'currency', currency: currency || 'USD' }).format(value)
-  } catch {
-    return new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD' }).format(value)
+// Intl.NumberFormat construction is expensive relative to .format() — this
+// page calls formatCurrency several times per holding row plus once per
+// series per chart-tooltip frame (i.e. on every mousemove while hovering
+// the portfolio/value chart), so an uncached formatter measurably compounds
+// with asset count. Cache is unbounded but keyed on (locale, currency)
+// pairs, which is a tiny, near-constant set in practice.
+const currencyFormatterCache = new Map<string, Intl.NumberFormat>()
+
+function getCurrencyFormatter(currency: string, locale: string): Intl.NumberFormat {
+  const key = `${locale}|${currency}`
+  let fmt = currencyFormatterCache.get(key)
+  if (!fmt) {
+    try {
+      fmt = new Intl.NumberFormat(locale, { style: 'currency', currency })
+    } catch {
+      fmt = new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD' })
+    }
+    currencyFormatterCache.set(key, fmt)
   }
+  return fmt
+}
+
+function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
+  return getCurrencyFormatter(currency || 'USD', locale).format(value)
 }
 
 // Renders a logo image when one is available, falling back to the asset's
@@ -223,6 +241,10 @@ export default function AssetsPage() {
   const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null)
   // Collapsed wallet IDs — default is expanded (empty set), user can collapse manually
   const [collapsedWallets, setCollapsedWallets] = useState<Set<string>>(new Set())
+  // Sold Assets section — collapsed by default so a portfolio with a long
+  // sell history doesn't clutter the page; the count stays visible in the
+  // header either way.
+  const [showSoldAssets, setShowSoldAssets] = useState(false)
   // Asset being moved to a wallet (null = no picker open)
   const [movingAsset, setMovingAsset] = useState<Asset | null>(null)
 
@@ -249,6 +271,11 @@ export default function AssetsPage() {
   const [tickerMatches, setTickerMatches] = useState<MarketSymbolMatch[]>([])
   const [tickerSearchLoading, setTickerSearchLoading] = useState(false)
   const [selectedQuote, setSelectedQuote] = useState<MarketSymbolQuote | null>(null)
+  // Tracks the symbol just picked from the dropdown, synchronously — unlike
+  // selectedQuote (set only after the async marketQuote resolves), this lets
+  // the search effect below bail out immediately instead of racing the quote
+  // fetch and re-populating the dropdown with the ticker the user just chose.
+  const pickedSymbolRef = useRef<string | null>(null)
   const [formUnits, setFormUnits] = useState('')
   // Per-unit purchase price for the opening buy of a market-priced holding.
   // Defaults to the live quote (buying at market now) and is the SAME input
@@ -498,8 +525,18 @@ export default function AssetsPage() {
     return Math.round(current * 100) / 100
   }, [formMethod, formPurchasePrice, formGrowthRate, formGrowthType, formGrowthFrequency, formGrowthStartDate, formPurchaseDate])
 
-  const activeAssets = assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? []
-  const soldAssets = assetsList?.filter(a => a.sell_date) ?? []
+  // Memoized so `assetsByGroup` below (which depends on activeAssets) can
+  // actually skip recomputing across unrelated re-renders — a plain
+  // .filter() here would hand it a new array reference every render and
+  // silently defeat its useMemo cache.
+  const activeAssets = useMemo(
+    () => assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? [],
+    [assetsList],
+  )
+  const soldAssets = useMemo(
+    () => assetsList?.filter(a => a.sell_date) ?? [],
+    [assetsList],
+  )
 
   // Debounced ticker search. Runs only when the market-price method is
   // selected and the query is non-trivial — keeps the autocomplete snappy
@@ -507,9 +544,10 @@ export default function AssetsPage() {
   useEffect(() => {
     if (formMethod !== 'market_price') return
     const q = formTickerQuery.trim()
-    // Don't search if the field matches the already-selected quote — the
-    // user just picked it and we'd spam the endpoint for no reason.
-    if (selectedQuote && q === selectedQuote.symbol) return
+    // Don't search if the field matches a just-picked symbol — checked via
+    // ref (not selectedQuote) because selectedQuote only lands after the
+    // async marketQuote call resolves, which can race this debounced search.
+    if (pickedSymbolRef.current && q === pickedSymbolRef.current) return
     if (q.length < 1) {
       setTickerMatches([])
       return
@@ -529,6 +567,7 @@ export default function AssetsPage() {
   }, [formMethod, formTickerQuery, selectedQuote])
 
   async function pickTickerMatch(match: MarketSymbolMatch) {
+    pickedSymbolRef.current = match.symbol
     setTickerMatches([])
     setFormTickerQuery(match.symbol)
     setQuoteLoading(true)
@@ -562,6 +601,7 @@ export default function AssetsPage() {
   }
 
   function resetMarketPriceForm() {
+    pickedSymbolRef.current = null
     setFormTickerQuery('')
     setTickerMatches([])
     setSelectedQuote(null)
@@ -1100,13 +1140,19 @@ export default function AssetsPage() {
             </div>
           )}
 
-          {/* Sold Assets */}
+          {/* Sold Assets — collapsed by default (see showSoldAssets) */}
           {soldAssets.length > 0 && (
             <div className="space-y-2">
-              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">
+              <button
+                type="button"
+                onClick={() => setShowSoldAssets(v => !v)}
+                className="flex items-center gap-1.5 px-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
+              >
+                {showSoldAssets ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                 {t('assets.soldAssets')}
-              </h3>
-              {renderHoldingsTable(soldAssets)}
+                <span className="normal-case font-normal">· {soldAssets.length} {t('assets.itemsCount')}</span>
+              </button>
+              {showSoldAssets && renderHoldingsTable(soldAssets)}
             </div>
           )}
 
@@ -1232,6 +1278,7 @@ export default function AssetsPage() {
                       value={formTickerQuery}
                       disabled={!!editingAsset}
                       onChange={e => {
+                        pickedSymbolRef.current = null
                         setFormTickerQuery(e.target.value)
                         // Clear the quote so we don't keep the old preview
                         // while the user is editing the symbol — prevents
@@ -1689,7 +1736,12 @@ export default function AssetsPage() {
 
 const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16']
 
-function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask }: {
+// Memoized: without this, every keystroke in the Add Asset dialog (state
+// lives on the parent AssetsPage) re-rendered this recharts tree too, even
+// though its props (data/wallets are already useMemo'd upstream) hadn't
+// changed. Props are all primitives/memoized values, so shallow-equal
+// bailout is safe and effective.
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
@@ -1940,7 +1992,7 @@ function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: date
       </div>
     </div>
   )
-}
+})
 
 // Marker drawn on the value chart where a buy (green) or sell (red) happened.
 // Recharts calls this per data point; non-trade points render an empty group.
@@ -1960,7 +2012,11 @@ function renderAssetTradeDot(props: {
   )
 }
 
-function AssetDetail({ assetId, currency, locale: loc, dateLocale: dateLoc, purchasePrice, purchaseDate, valuationMethod, canWrite, chartOnly = false }: {
+// Memoized for the same reason as PortfolioChart — all props here are
+// primitives, so a shallow-equal bailout skips re-rendering an expanded
+// holding's chart/ledger on unrelated parent-state changes (e.g. typing in
+// the Add Asset dialog).
+const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, dateLocale: dateLoc, purchasePrice, purchaseDate, valuationMethod, canWrite, chartOnly = false }: {
   assetId: string; currency: string; locale: string; dateLocale: string
   purchasePrice: number | null; purchaseDate: string | null
   valuationMethod: string
@@ -2243,7 +2299,7 @@ function AssetDetail({ assetId, currency, locale: loc, dateLocale: dateLoc, purc
       </div>}
     </div>
   )
-}
+})
 
 // Transactions tab (issue #235): the buy/sell ledger behind the consolidated
 // holdings. Lists every transaction across the portfolio and lets users add a
