@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 @router.get("/net-worth", response_model=ReportResponse)
 async def get_net_worth(
-    months: int = Query(12, ge=1, le=24),
+    months: int = Query(12, ge=1, le=120),
     interval: str = Query("monthly", pattern="^(daily|weekly|monthly|yearly)$"),
     account_ids: Optional[list[uuid.UUID]] = Query(None),
     asset_group_ids: Optional[list[uuid.UUID]] = Query(None),
@@ -30,7 +30,7 @@ async def get_net_worth(
 
 @router.get("/income-expenses", response_model=ReportResponse)
 async def get_income_expenses(
-    months: int = Query(12, ge=1, le=24),
+    months: int = Query(12, ge=1, le=120),
     interval: str = Query("monthly", pattern="^(daily|weekly|monthly|yearly)$"),
     account_ids: Optional[list[uuid.UUID]] = Query(None),
     period: str | None = Query(None, pattern="^ytd$"),

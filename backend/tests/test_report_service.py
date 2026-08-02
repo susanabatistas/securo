@@ -527,7 +527,7 @@ async def test_income_expenses_api_validation(client, auth_headers):
 
     resp = await client.get(
         "/api/reports/income-expenses",
-        params={"months": 25},
+        params={"months": 121},
         headers=auth_headers,
     )
     assert resp.status_code == 422
