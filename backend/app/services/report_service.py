@@ -274,7 +274,7 @@ async def _net_worth_at(
             session,
             workspace_id,
             cutoff,
-            asset_group_ids if filtered else None,
+            (asset_group_ids or []) if filtered else None,
         )
     asset_values = asset_values or {}
     if rate_series is None:
@@ -435,7 +435,7 @@ async def get_net_worth_report(
         session,
         workspace_id,
         today,
-        asset_group_ids if filtered else None,
+        (asset_group_ids or []) if filtered else None,
     )
     accounts = await _get_open_accounts(session, workspace_id, account_ids)
     balance_histories = await _load_account_balances(session, accounts, today)
