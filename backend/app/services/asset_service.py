@@ -7,10 +7,12 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.asset import Asset
 from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
+from app.models.fx_rate import FxRate
 from app.models.user import User
 from app.core.config import get_settings
 from app.providers.market_price import (
@@ -350,6 +352,73 @@ def _fill_forward_at(
     return result
 
 
+async def _bulk_load_fx_rates(
+    session: AsyncSession, currencies: set[str]
+) -> dict[str, list[tuple[date, Decimal]]]:
+    """One-shot load of every stored USD-quote rate for the given currencies.
+
+    Used to replace per-(date, currency) rate lookups in hot loops (e.g.
+    get_portfolio_trend) with an in-memory lookup — querying per cell there
+    made the endpoint cost grow with dates x assets and, whenever a rate was
+    missing, even triggered a synchronous external FX-provider fetch inside
+    the loop.
+    """
+    needed = {c for c in currencies if c != "USD"}
+    if not needed:
+        return {}
+    rows = (
+        await session.execute(
+            select(FxRate.quote_currency, FxRate.date, FxRate.rate)
+            .where(FxRate.base_currency == "USD", FxRate.quote_currency.in_(needed))
+            .order_by(FxRate.quote_currency, FxRate.date)
+        )
+    ).all()
+    out: dict[str, list[tuple[date, Decimal]]] = {c: [] for c in needed}
+    for currency, d, rate in rows:
+        out[currency].append((d, rate))
+    return out
+
+
+def _closest_stored_rate(series: list[tuple[date, Decimal]], target: date) -> Optional[Decimal]:
+    """Latest rate on or before `target`; falls back to the earliest after it.
+
+    `series` must be sorted ascending by date. Mirrors
+    fx_rate_service._get_closest_rate's before-then-after preference, but as
+    an in-memory scan instead of a query.
+    """
+    result = None
+    for d, r in series:
+        if d <= target:
+            result = r
+        else:
+            if result is None:
+                result = r
+            break
+    return result
+
+
+def _cross_rate(
+    rate_series: dict[str, list[tuple[date, Decimal]]],
+    from_currency: str,
+    to_currency: str,
+    target: date,
+) -> Optional[Decimal]:
+    """In-memory equivalent of fx_rate_service._resolve_rate (no on-demand
+    fetch — this is for reporting endpoints that must stay cheap, not for
+    persisting a conversion)."""
+    if from_currency == to_currency:
+        return Decimal("1")
+    usd_to_source = Decimal("1") if from_currency == "USD" else _closest_stored_rate(
+        rate_series.get(from_currency, []), target
+    )
+    usd_to_target = Decimal("1") if to_currency == "USD" else _closest_stored_rate(
+        rate_series.get(to_currency, []), target
+    )
+    if usd_to_source is None or usd_to_target is None or usd_to_source == 0:
+        return None
+    return usd_to_target / usd_to_source
+
+
 async def _get_value_count(session: AsyncSession, asset_id: uuid.UUID) -> int:
     """Get the number of AssetValue entries for an asset."""
     result = await session.scalar(
@@ -370,6 +439,42 @@ async def _get_transaction_counts(
     return {row[0]: row[1] for row in result.all()}
 
 
+async def _bulk_latest_values(
+    session: AsyncSession, asset_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, AssetValue]:
+    """Latest AssetValue per asset, in one query — avoids an N+1 round trip
+    per asset on the list endpoint. Uses ROW_NUMBER() rather than Postgres's
+    DISTINCT ON so it stays portable across dialects (tests run on SQLite)."""
+    if not asset_ids:
+        return {}
+    row_number = (
+        func.row_number()
+        .over(
+            partition_by=AssetValue.asset_id,
+            order_by=(desc(AssetValue.date), desc(AssetValue.id)),
+        )
+        .label("rn")
+    )
+    ranked = select(AssetValue, row_number).where(AssetValue.asset_id.in_(asset_ids)).subquery()
+    latest = aliased(AssetValue, ranked)
+    result = await session.execute(select(latest).where(ranked.c.rn == 1))
+    return {v.asset_id: v for v in result.scalars().all()}
+
+
+async def _bulk_value_counts(
+    session: AsyncSession, asset_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """Number of AssetValue rows per asset, in one query."""
+    if not asset_ids:
+        return {}
+    result = await session.execute(
+        select(AssetValue.asset_id, func.count())
+        .where(AssetValue.asset_id.in_(asset_ids))
+        .group_by(AssetValue.asset_id)
+    )
+    return {row[0]: row[1] for row in result.all()}
+
+
 async def get_assets(
     session: AsyncSession, workspace_id: uuid.UUID, include_archived: bool = False
 ) -> list[AssetRead]:
@@ -381,14 +486,21 @@ async def get_assets(
 
     result = await session.execute(query)
     assets = list(result.scalars().all())
+    asset_ids = [a.id for a in assets]
 
     tx_counts = await _get_transaction_counts(session, workspace_id)
-    reads = []
-    for asset in assets:
-        latest = await _get_latest_value(session, asset.id)
-        count = await _get_value_count(session, asset.id)
-        reads.append(_asset_to_read(asset, latest, count, tx_counts.get(asset.id, 0)))
-    return reads
+    latest_values = await _bulk_latest_values(session, asset_ids)
+    value_counts = await _bulk_value_counts(session, asset_ids)
+
+    return [
+        _asset_to_read(
+            asset,
+            latest_values.get(asset.id),
+            value_counts.get(asset.id, 0),
+            tx_counts.get(asset.id, 0),
+        )
+        for asset in assets
+    ]
 
 
 async def get_asset(
@@ -858,6 +970,15 @@ async def get_portfolio_trend(
         if values_map[aid]:
             first_date[aid] = values_map[aid][0][0]
 
+    # Bulk-load every FX rate we might need for this trend once, up front —
+    # the old code called `convert()` (up to 2 rate queries, and on a missing
+    # date even a live external-provider fetch) once per (date, asset) cell,
+    # which made this endpoint cost grow with dates x assets and get slower
+    # the more history/assets a workspace had.
+    rate_series = await _bulk_load_fx_rates(
+        session, {asset_currency[a["id"]] for a in asset_meta} | {primary_currency}
+    )
+
     # Build trend with fill-forward; 0 before first date (for stacking).
     # Each native-currency amount is converted at the display date `d` so that
     # fill-forwarded values reflect current FX rates — consistent with
@@ -887,10 +1008,10 @@ async def get_portfolio_trend(
             # Convert native amount to primary currency at this display date
             currency = asset_currency[aid]
             if native != 0.0 and currency != primary_currency:
-                converted, _ = await convert(
-                    session, Decimal(str(native)), currency, primary_currency, d
-                )
-                val = round(float(converted), 2)
+                rate = _cross_rate(rate_series, currency, primary_currency, d)
+                # Same fallback as fx_rate_service.get_rate: no resolvable
+                # rate → treat as 1:1 rather than dropping the value.
+                val = round(native * float(rate), 2) if rate is not None else round(native, 2)
             else:
                 val = round(native, 2)
 
