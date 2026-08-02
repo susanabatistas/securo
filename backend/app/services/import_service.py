@@ -24,7 +24,6 @@ from app.services.credit_card_service import apply_effective_date
 from app.services.rule_engine import apply_rule_actions, evaluate_conditions
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount
-from app.services.payee_service import get_or_create_payee
 
 
 # Descriptions used by some Brazilian banks (e.g. Banco do Brasil) for
@@ -639,14 +638,13 @@ async def import_transactions(
                 skipped += 1
                 continue
 
-        # Resolve payee entity from raw payee text (OFX/QIF)
+        # Keep the raw payee text (OFX/QIF) on the transaction for display,
+        # but don't auto-create a Payee entity from it: bank-provided strings
+        # vary per transaction (installment suffixes, ride-share timestamps,
+        # etc.), so doing this created a near-duplicate Payee for almost every
+        # import. Users can assign a real payee manually if they want one.
         import_payee_id = None
         import_payee_raw = getattr(txn_data, "payee_raw", None)
-        if import_payee_raw:
-            import_payee_entity = await get_or_create_payee(
-                session, user_id, import_payee_raw, workspace_id=workspace_id
-            )
-            import_payee_id = import_payee_entity.id
 
         # Recurring bill reconciliation (issue #116): if this imported charge
         # fulfills a generated placeholder, merge into it instead of creating a

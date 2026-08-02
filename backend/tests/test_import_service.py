@@ -1151,7 +1151,7 @@ class TestImportTransactionsFx:
         mock_provider.fetch_historical.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_import_raw_payee_uses_workspace(self, session: AsyncSession, test_user: User, test_workspace, test_account: Account):
+    async def test_import_raw_payee_does_not_create_payee_entity(self, session: AsyncSession, test_user: User, test_workspace, test_account: Account):
         from app.models.payee import Payee
         from app.models.transaction import Transaction
         from app.schemas.transaction import TransactionImport
@@ -1174,9 +1174,11 @@ class TestImportTransactionsFx:
 
         assert imported == 1
         assert skipped == 0
-        payee = (await session.execute(select(Payee).where(Payee.name == "Cafe"))).scalar_one()
-        tx = (await session.execute(select(Transaction).where(Transaction.payee_id == payee.id))).scalar_one()
-        assert payee.workspace_id == test_workspace.id
+        payee_count = (await session.execute(select(Payee).where(Payee.name == "Cafe"))).scalars().all()
+        assert payee_count == []
+        tx = (await session.execute(select(Transaction).where(Transaction.description == "Cafe memo"))).scalar_one()
+        assert tx.payee == "Cafe"
+        assert tx.payee_id is None
         assert tx.workspace_id == test_workspace.id
 
     @pytest.mark.asyncio
