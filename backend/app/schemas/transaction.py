@@ -36,6 +36,22 @@ class TransactionCreate(TransactionBase):
     splits: Optional[TransactionSplitsInput] = None
 
 
+class InstallmentPlanCreate(BaseModel):
+    """Create N fixed installment transactions (e.g. a 24x card purchase) in one call."""
+    description: str
+    account_id: uuid.UUID
+    category_id: Optional[uuid.UUID] = None
+    payee_id: Optional[uuid.UUID] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+    type: str = "debit"  # debit, credit
+    amount: Decimal  # per-installment amount
+    total_installments: int = Field(..., ge=2, le=360)
+    first_installment_date: _Date
+    frequency: Literal["monthly", "weekly", "yearly"] = "monthly"
+    is_ignored: bool = False
+
+
 class TransactionUpdate(BaseModel):
     description: Optional[str] = None
     amount: Optional[Decimal] = None

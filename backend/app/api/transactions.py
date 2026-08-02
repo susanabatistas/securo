@@ -15,7 +15,7 @@ from app.core.workspace_context import (
     current_workspace,
     current_writable_workspace,
 )
-from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, LinkTransferRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
+from app.schemas.transaction import BulkAddToGroupRequest, BulkCategorizeRequest, BulkTagsRequest, CreateCounterpartRequest, InstallmentPlanCreate, LinkTransferRequest, TransactionCreate, TransactionRead, TransactionUpdate, TransferCreate, TransferRead
 from app.schemas.transaction_calendar import TransactionCalendarResponse
 from app.services import transaction_service
 from app.services.admin_service import get_credit_card_accounting_mode
@@ -400,6 +400,27 @@ async def create_transaction(
         return _tag_fx_fallback(TransactionRead.model_validate(full_tx, from_attributes=True), primary_currency)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/installment-plan", response_model=List[TransactionRead], status_code=status.HTTP_201_CREATED)
+async def create_installment_plan(
+    data: InstallmentPlanCreate,
+    ctx: WorkspaceContext = Depends(current_writable_workspace),
+    session: AsyncSession = Depends(get_async_session),
+):
+    try:
+        created = await transaction_service.create_installment_plan(
+            session, ctx.workspace.id, ctx.user_id, data
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    primary_currency = ctx.user.primary_currency
+    result = []
+    for tx in created:
+        full_tx = await transaction_service.get_transaction(session, tx.id, ctx.workspace.id)
+        result.append(_tag_fx_fallback(TransactionRead.model_validate(full_tx, from_attributes=True), primary_currency))
+    return result
 
 
 @router.patch("/{transaction_id}", response_model=TransactionRead)

@@ -413,6 +413,51 @@ async def test_create_transaction_invalid_account(
 
 
 @pytest.mark.asyncio
+async def test_create_installment_plan(
+    client: AsyncClient, auth_headers, test_account: Account, test_categories: list[Category]
+):
+    response = await client.post(
+        "/api/transactions/installment-plan",
+        headers=auth_headers,
+        json={
+            "account_id": str(test_account.id),
+            "category_id": str(test_categories[0].id),
+            "description": "Alura",
+            "amount": "59.60",
+            "total_installments": 24,
+            "first_installment_date": "2024-05-22",
+        },
+    )
+    assert response.status_code == 201
+    data = response.json()
+    assert len(data) == 24
+    assert data[0]["installment_number"] == 1
+    assert data[-1]["installment_number"] == 24
+    assert data[0]["total_installments"] == 24
+    assert data[0]["installment_total_amount"] == 1430.40
+    assert data[0]["date"] == "2024-05-22"
+    assert data[-1]["date"] == "2026-04-22"
+
+
+@pytest.mark.asyncio
+async def test_create_installment_plan_invalid_account(
+    client: AsyncClient, auth_headers,
+):
+    response = await client.post(
+        "/api/transactions/installment-plan",
+        headers=auth_headers,
+        json={
+            "account_id": "00000000-0000-0000-0000-000000000000",
+            "description": "Test",
+            "amount": "10.00",
+            "total_installments": 3,
+            "first_installment_date": "2026-02-20",
+        },
+    )
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_update_transaction(
     client: AsyncClient, auth_headers, session: AsyncSession, test_workspace,
     test_user: User, test_transactions: list[Transaction],

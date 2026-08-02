@@ -15,10 +15,11 @@ from app.models.bank_connection import BankConnection
 from app.models.category import Category
 from app.models.group import Group, GroupMember
 from app.models.payee import Payee
-from app.schemas.transaction import TransactionCreate, TransactionUpdate, TransferCreate
+from app.schemas.transaction import InstallmentPlanCreate, TransactionCreate, TransactionUpdate, TransferCreate
 from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
 from app.services import split_service
 from app.services.credit_card_service import apply_effective_date
+from app.services.date_stepping import advance_date
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
 from app.services._query_filters import counts_as_pnl, counts_as_user_pnl, reporting_date_col
@@ -726,6 +727,82 @@ async def create_transaction(
     await session.commit()
     await session.refresh(transaction, ["category", "splits"])
     return transaction
+
+
+async def create_installment_plan(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    data: InstallmentPlanCreate,
+) -> list[Transaction]:
+    # Verify account belongs to the workspace
+    account_result = await session.execute(
+        select(Account)
+        .outerjoin(BankConnection)
+        .where(
+            Account.id == data.account_id,
+            or_(
+                Account.workspace_id == workspace_id,
+                BankConnection.workspace_id == workspace_id,
+            ),
+        )
+    )
+    account = account_result.scalar_one_or_none()
+    if not account:
+        raise ValueError("Account not found")
+
+    await _ensure_category_in_workspace(session, workspace_id, data.category_id)
+    await _ensure_payee_in_workspace(session, workspace_id, data.payee_id)
+
+    # Resolve currency: explicit value > account currency
+    currency = data.currency or account.currency
+    installment_total_amount = data.amount * data.total_installments
+
+    transactions: list[Transaction] = []
+    tx_date = data.first_installment_date
+    for installment_number in range(1, data.total_installments + 1):
+        if installment_number > 1:
+            tx_date = advance_date(
+                tx_date, data.frequency,
+                intended_day=data.first_installment_date.day,
+            )
+        transaction = Transaction(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            account_id=data.account_id,
+            category_id=data.category_id,
+            payee_id=data.payee_id,
+            description=data.description,
+            amount=data.amount,
+            currency=currency,
+            date=tx_date,
+            type=data.type,
+            source="manual",
+            notes=data.notes,
+            is_ignored=data.is_ignored,
+            installment_number=installment_number,
+            total_installments=data.total_installments,
+            installment_total_amount=installment_total_amount,
+            installment_purchase_date=data.first_installment_date,
+        )
+        apply_effective_date(transaction, account)
+        session.add(transaction)
+        transactions.append(transaction)
+
+    await session.flush()  # get IDs for all rows without committing
+
+    # Apply rules only if no explicit category provided
+    if not data.category_id:
+        for transaction in transactions:
+            await apply_rules_to_transaction(session, user_id, transaction)
+
+    for transaction in transactions:
+        await stamp_primary_amount(session, user_id, transaction)
+
+    await session.commit()
+    for transaction in transactions:
+        await session.refresh(transaction, ["category", "splits"])
+    return transactions
 
 
 async def create_transfer(
