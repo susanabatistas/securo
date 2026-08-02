@@ -1,5 +1,7 @@
 import calendar
 import uuid
+from bisect import bisect_right
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -32,7 +34,8 @@ from app.schemas.report import (
     ReportResponse,
     ReportSummary,
 )
-from app.services.dashboard_service import _get_open_accounts, _account_balance_at
+from app.services.dashboard_service import _get_open_accounts
+from app.services.asset_service import _bulk_load_fx_rates, _cross_rate
 
 CATEGORY_TREND_TOP_N = 11
 
@@ -50,6 +53,156 @@ _ASSET_TYPE_COLORS: dict[str, str] = {
     "investment": "#8B5CF6",
     "other": "#6B7280",
 }
+
+
+async def _load_report_assets(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    up_to: date,
+    asset_group_ids: Optional[list[uuid.UUID]] = None,
+) -> tuple[list[Asset], dict[uuid.UUID, list[tuple[date, Decimal]]]]:
+    """Load assets and their value history once for a net-worth report.
+
+    A report has many snapshots, and querying the latest value for every asset
+    at every snapshot turns a daily report into thousands of small queries.
+    Keeping the ordered histories in memory makes each snapshot a cheap
+    fill-forward lookup instead.
+    """
+    asset_stmt = select(Asset).where(
+        Asset.workspace_id == workspace_id,
+        Asset.is_archived == False,
+        Asset.sell_date.is_(None),
+    )
+    if asset_group_ids is not None:
+        asset_stmt = asset_stmt.where(Asset.group_id.in_(asset_group_ids))
+    assets = list((await session.execute(asset_stmt)).scalars().all())
+    if not assets:
+        return assets, {}
+
+    asset_ids = [asset.id for asset in assets]
+    value_rows = await session.execute(
+        select(AssetValue.asset_id, AssetValue.date, AssetValue.amount)
+        .where(AssetValue.asset_id.in_(asset_ids), AssetValue.date <= up_to)
+        .order_by(AssetValue.asset_id, AssetValue.date, AssetValue.id)
+    )
+    values: dict[uuid.UUID, list[tuple[date, Decimal]]] = {asset_id: [] for asset_id in asset_ids}
+    for asset_id, value_date, amount in value_rows:
+        values[asset_id].append((value_date, amount))
+    return assets, values
+
+
+@dataclass
+class _AccountBalanceHistory:
+    """Per-account running balance, sampled once per day that had activity.
+    `cumulative[i]` is the signed sum of every transaction up to and
+    including `dates[i]`; `total` is the final cumulative value."""
+    dates: list[date]
+    cumulative: list[float]
+    total: float
+
+
+_EMPTY_BALANCE_HISTORY = _AccountBalanceHistory(dates=[], cumulative=[], total=0.0)
+
+
+async def _load_account_balances(
+    session: AsyncSession,
+    accounts: list[Account],
+    up_to: date,
+) -> dict[uuid.UUID, _AccountBalanceHistory]:
+    """Load every account's daily balance deltas once for a net-worth report.
+
+    Mirrors `_load_report_assets`: a report has many snapshots, and querying
+    an account's balance-at-cutoff (`_account_balance_at`) for every snapshot
+    turns a daily report into thousands of aggregate queries. Precomputing
+    each account's running balance in memory makes each snapshot an O(log n)
+    lookup instead.
+    """
+    if not accounts:
+        return {}
+    account_ids = [a.id for a in accounts]
+
+    effective = case(
+        (Transaction.currency == Account.currency, Transaction.amount),
+        else_=func.coalesce(Transaction.amount_primary, Transaction.amount),
+    )
+    signed = case(
+        (Transaction.type == "credit", effective),
+        else_=-effective,
+    )
+    rows = await session.execute(
+        select(Transaction.account_id, Transaction.date, func.sum(signed))
+        .join(Account, Transaction.account_id == Account.id)
+        .where(
+            Transaction.account_id.in_(account_ids),
+            Transaction.date <= up_to,
+            Transaction.is_ignored == False,
+        )
+        .group_by(Transaction.account_id, Transaction.date)
+        .order_by(Transaction.account_id, Transaction.date)
+    )
+
+    by_account: dict[uuid.UUID, list[tuple[date, float]]] = {aid: [] for aid in account_ids}
+    for account_id, tx_date, delta in rows:
+        by_account[account_id].append((tx_date, float(delta or 0)))
+
+    histories: dict[uuid.UUID, _AccountBalanceHistory] = {}
+    for account_id, daily in by_account.items():
+        dates: list[date] = []
+        cumulative: list[float] = []
+        running = 0.0
+        for d, delta in daily:
+            running += delta
+            dates.append(d)
+            cumulative.append(running)
+        histories[account_id] = _AccountBalanceHistory(dates=dates, cumulative=cumulative, total=running)
+    return histories
+
+
+def _account_balance_at_cached(
+    account: Account, history: Optional[_AccountBalanceHistory], cutoff: date,
+) -> float:
+    """In-memory equivalent of `_account_balance_at`, reading from a
+    preloaded `_AccountBalanceHistory` instead of issuing a query."""
+    h = history or _EMPTY_BALANCE_HISTORY
+    index = bisect_right(h.dates, cutoff) - 1
+    cum_up_to_cutoff = h.cumulative[index] if index >= 0 else 0.0
+    if account.connection_id:
+        current_bal = float(account.balance)
+        if account.type == "credit_card":
+            current_bal = -current_bal
+        return current_bal - (h.total - cum_up_to_cutoff)
+    return cum_up_to_cutoff
+
+
+def _convert_cached(
+    rate_series: dict[str, list[tuple[date, Decimal]]],
+    amount: Decimal,
+    from_currency: str,
+    to_currency: str,
+    target_date: date,
+) -> float:
+    """In-memory equivalent of fx_rate_service.convert, backed by a
+    `_bulk_load_fx_rates` snapshot instead of a per-call rate query."""
+    if from_currency == to_currency:
+        return float(amount)
+    rate = _cross_rate(rate_series, from_currency, to_currency, target_date) or Decimal("1")
+    return float((amount * rate).quantize(Decimal("0.01")))
+
+
+def _asset_amount_at(
+    asset: Asset,
+    values: list[tuple[date, Decimal]],
+    cutoff: date,
+) -> float:
+    """Return an asset's stored value at ``cutoff``, with purchase fallback."""
+    index = bisect_right(values, cutoff, key=lambda row: row[0]) - 1
+    if index >= 0:
+        return float(values[index][1])
+    if asset.purchase_price is not None and (
+        asset.purchase_date is None or asset.purchase_date <= cutoff
+    ):
+        return float(asset.purchase_price)
+    return 0.0
 
 
 def _report_start_date(
@@ -76,31 +229,10 @@ async def _asset_value_at(
     group_ids: Optional[list[uuid.UUID]] = None,
 ) -> float:
     """Sum of all active asset values at a given date, converted to primary currency."""
-    asset_stmt = select(Asset).where(
-        Asset.workspace_id == workspace_id,
-        Asset.is_archived == False,
-        Asset.sell_date.is_(None),
-    )
-    if group_ids is not None:
-        asset_stmt = asset_stmt.where(Asset.group_id.in_(group_ids))
-    asset_result = await session.execute(asset_stmt)
+    assets, values = await _load_report_assets(session, workspace_id, cutoff, group_ids)
     total = 0.0
-    for asset in asset_result.scalars().all():
-        val_result = await session.execute(
-            select(AssetValue.amount)
-            .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
-            .order_by(desc(AssetValue.date), desc(AssetValue.id))
-            .limit(1)
-        )
-        val = val_result.scalar_one_or_none()
-        if val is not None:
-            amount = float(val)
-        elif asset.purchase_price is not None and (
-            asset.purchase_date is None or asset.purchase_date <= cutoff
-        ):
-            amount = float(asset.purchase_price)
-        else:
-            amount = 0.0
+    for asset in assets:
+        amount = _asset_amount_at(asset, values.get(asset.id, []), cutoff)
         if amount > 0:
             converted, _ = await convert(
                 session, Decimal(str(amount)), asset.currency, primary_currency, cutoff
@@ -114,24 +246,50 @@ async def _net_worth_at(
     primary_currency: str = "USD",
     account_ids: Optional[list[uuid.UUID]] = None,
     asset_group_ids: Optional[list[uuid.UUID]] = None,
+    assets: Optional[list[Asset]] = None,
+    asset_values: Optional[dict[uuid.UUID, list[tuple[date, Decimal]]]] = None,
+    accounts: Optional[list[Account]] = None,
+    balance_histories: Optional[dict[uuid.UUID, _AccountBalanceHistory]] = None,
+    rate_series: Optional[dict[str, list[tuple[date, Decimal]]]] = None,
 ) -> ReportDataPoint:
     """Compute a single net worth snapshot at a given date, converted to primary currency.
 
     Under a Collection filter (``account_ids`` set), only those accounts are
     summed and only assets in the collection's wallets (``asset_group_ids``)
-    are included."""
-    accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    are included.
+
+    ``accounts``/``balance_histories``/``rate_series`` are preloaded by
+    ``get_net_worth_report`` and reused across every snapshot — a report
+    evaluates many dates, and re-querying open accounts, account balances,
+    and FX rates per snapshot turns a daily report into thousands of queries.
+    Falls back to loading them here (one snapshot's worth) for any other caller.
+    """
+    filtered = account_ids is not None
+    if accounts is None:
+        accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    if balance_histories is None:
+        balance_histories = await _load_account_balances(session, accounts, cutoff)
+    if assets is None:
+        assets, asset_values = await _load_report_assets(
+            session,
+            workspace_id,
+            cutoff,
+            asset_group_ids if filtered else None,
+        )
+    asset_values = asset_values or {}
+    if rate_series is None:
+        currencies = {a.currency for a in accounts} | {a.currency for a in assets} | {primary_currency}
+        rate_series = await _bulk_load_fx_rates(session, currencies)
 
     accounts_total = 0.0
     liabilities_total = 0.0
     composition: list[ReportCompositionItem] = []
 
     for account in accounts:
-        bal = await _account_balance_at(session, account, cutoff)
-        converted, _ = await convert(
-            session, Decimal(str(abs(bal))), account.currency, primary_currency, cutoff
+        bal = _account_balance_at_cached(account, balance_histories.get(account.id), cutoff)
+        converted_val = _convert_cached(
+            rate_series, Decimal(str(abs(bal))), account.currency, primary_currency, cutoff
         )
-        converted_val = float(converted)
         if account.type == "credit_card" or bal < 0:
             liabilities_total += converted_val
             if converted_val > 0:
@@ -154,37 +312,14 @@ async def _net_worth_at(
                 ))
 
     # Per-asset composition at the cutoff date
-    filtered = account_ids is not None
-    asset_stmt = select(Asset).where(
-        Asset.workspace_id == workspace_id,
-        Asset.is_archived == False,
-        Asset.sell_date.is_(None),
-    )
-    if filtered:
-        asset_stmt = asset_stmt.where(Asset.group_id.in_(asset_group_ids or []))
-    asset_result = await session.execute(asset_stmt)
     assets_total = 0.0
-    for asset in asset_result.scalars().all():
-        val_result = await session.execute(
-            select(AssetValue.amount)
-            .where(AssetValue.asset_id == asset.id, AssetValue.date <= cutoff)
-            .order_by(desc(AssetValue.date), desc(AssetValue.id))
-            .limit(1)
-        )
-        val = val_result.scalar_one_or_none()
-        if val is not None:
-            amount = float(val)
-        elif asset.purchase_price is not None and (
-            asset.purchase_date is None or asset.purchase_date <= cutoff
-        ):
-            amount = float(asset.purchase_price)
-        else:
-            amount = 0.0
+    for asset in assets:
+        amount = _asset_amount_at(asset, asset_values.get(asset.id, []), cutoff)
         if amount > 0:
-            converted, _ = await convert(
-                session, Decimal(str(amount)), asset.currency, primary_currency, cutoff
+            converted_val = round(
+                _convert_cached(rate_series, Decimal(str(amount)), asset.currency, primary_currency, cutoff),
+                2,
             )
-            converted_val = round(float(converted), 2)
             assets_total += converted_val
             composition.append(ReportCompositionItem(
                 key=str(asset.id),
@@ -291,10 +426,30 @@ async def get_net_worth_report(
 
     points = _date_points(start, today, interval)
 
+    # Asset/account histories and FX rates do not change during a read-only
+    # report. Load them once, rather than issuing one latest-value/balance/
+    # rate query per item per chart point — a daily 10y report has ~3650
+    # points, which otherwise turns this into tens of thousands of queries.
+    filtered = account_ids is not None
+    assets, asset_values = await _load_report_assets(
+        session,
+        workspace_id,
+        today,
+        asset_group_ids if filtered else None,
+    )
+    accounts = await _get_open_accounts(session, workspace_id, account_ids)
+    balance_histories = await _load_account_balances(session, accounts, today)
+    currencies = {a.currency for a in accounts} | {a.currency for a in assets} | {primary_currency}
+    rate_series = await _bulk_load_fx_rates(session, currencies)
+
     # Compute snapshot at each date point
     trend: list[ReportDataPoint] = []
     for point in points:
-        dp = await _net_worth_at(session, workspace_id, point, primary_currency, account_ids, asset_group_ids)
+        dp = await _net_worth_at(
+            session, workspace_id, point, primary_currency, account_ids,
+            asset_group_ids, assets, asset_values,
+            accounts, balance_histories, rate_series,
+        )
         dp.date = _format_date_label(point, interval)
         dp.change = round(dp.value - trend[-1].value, 2) if trend else None
         trend.append(dp)
@@ -303,7 +458,11 @@ async def get_net_worth_report(
     current = trend[-1] if trend else ReportDataPoint(
         date="", value=0, breakdowns={"accounts": 0, "assets": 0, "liabilities": 0}
     )
-    baseline = await _net_worth_at(session, workspace_id, start, primary_currency, account_ids, asset_group_ids)
+    baseline = await _net_worth_at(
+        session, workspace_id, start, primary_currency, account_ids,
+        asset_group_ids, assets, asset_values,
+        accounts, balance_histories, rate_series,
+    )
     previous = baseline if trend else current
 
     change_amount = current.value - previous.value
