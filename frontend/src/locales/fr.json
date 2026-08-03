@@ -418,6 +418,7 @@
     "transferDescription": "Description",
     "transferNotes": "Notes",
     "transferInfo": "Il s'agit d'un virement — les modifications de la description, de la date et des notes s'appliqueront aux deux côtés",
+    "transferLinkedTo": "Liée à :",
     "transferTooltip": "Les virements sont exclus des totaux des rapports et du tableau de bord",
     "installmentTooltip": "Paiement échelonné — {{count}} prélèvements pour un total de {{total}}",
     "splitIntoInstallments": "Diviser en versements",
@@ -515,7 +516,15 @@
     "calendarAddIncome": "Ajouter un revenu",
     "calendarAddExpense": "Ajouter une dépense",
     "calendarSelectedDay": "Jour sélectionné",
-    "calendarNoItems": "Aucune transaction ce jour-là"
+    "calendarNoItems": "Aucune transaction ce jour-là",
+    "calendarMetric": "Données",
+    "calendarBalanceMode": "Solde",
+    "calendarActivityMode": "Activité",
+    "calendarActivityTrend": "Activité quotidienne",
+    "calendarNoActivity": "Aucune activité ce mois-ci",
+    "calendarNoMovements": "Aucun mouvement",
+    "calendarActualNet": "Net réel",
+    "calendarTransfersExcluded": "Les virements ne comptent pas comme revenus ou dépenses"
   },
   "accounts": {
     "title": "Comptes",
@@ -832,6 +841,7 @@
     "andOp": "ET",
     "orOp": "OU",
     "addCondition": "Ajouter une condition",
+    "blankConditionValue": "Chaque condition nécessite une valeur. Une condition vide correspondrait à toutes les transactions.",
     "addAction": "Ajouter une action",
     "setCategory": "Définir la catégorie",
     "setPayee": "Définir le bénéficiaire",
@@ -980,7 +990,10 @@
     "balanceImpact": "Impact sur le solde",
     "importedWithExcluded": "{{imported}} importées, {{skipped}} ignorées, {{excluded}} exclues",
     "suggested": "Suggérée",
-    "page": "Page {{current}} sur {{total}}"
+    "page": "Page {{current}} sur {{total}}",
+    "mapPayee": "Colonne du bénéficiaire",
+    "mapExternalId": "Colonne d'ID de transaction",
+    "mapNotes": "Colonne des notes"
   },
   "assets": {
     "title": "Actifs",

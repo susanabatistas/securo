@@ -418,6 +418,7 @@
     "transferDescription": "Описание",
     "transferNotes": "Примечания",
     "transferInfo": "Это перевод — изменения в описании, дате и примечаниях будут применены к обеим сторонам",
+    "transferLinkedTo": "Связана с:",
     "transferTooltip": "Переводы исключаются из отчётов и итогов панели",
     "installmentTooltip": "План рассрочки — {{count}} платежей на сумму {{total}}",
     "splitIntoInstallments": "Разделить на платежи",
@@ -515,7 +516,15 @@
     "calendarAddIncome": "Добавить доход",
     "calendarAddExpense": "Добавить расход",
     "calendarSelectedDay": "Выбранный день",
-    "calendarNoItems": "В этот день транзакций нет"
+    "calendarNoItems": "В этот день транзакций нет",
+    "calendarMetric": "Данные",
+    "calendarBalanceMode": "Баланс",
+    "calendarActivityMode": "Активность",
+    "calendarActivityTrend": "Дневная активность",
+    "calendarNoActivity": "В этом месяце нет активности",
+    "calendarNoMovements": "Нет операций",
+    "calendarActualNet": "Фактический итог",
+    "calendarTransfersExcluded": "Переводы не учитываются как приход или расходы"
   },
   "accounts": {
     "title": "Счета",
@@ -832,6 +841,7 @@
     "andOp": "И",
     "orOp": "ИЛИ",
     "addCondition": "Добавить условие",
+    "blankConditionValue": "Каждому условию нужно значение. Пустое условие совпадёт со всеми транзакциями.",
     "addAction": "Добавить действие",
     "setCategory": "Установить категорию",
     "setPayee": "Установить получателя",
@@ -980,7 +990,10 @@
     "balanceImpact": "Влияние на баланс",
     "importedWithExcluded": "{{imported}} импортировано, {{skipped}} пропущено, {{excluded}} исключено",
     "suggested": "Предложено",
-    "page": "Страница {{current}} из {{total}}"
+    "page": "Страница {{current}} из {{total}}",
+    "mapPayee": "Колонка получателя",
+    "mapExternalId": "Колонка ID транзакции",
+    "mapNotes": "Колонка заметок"
   },
   "assets": {
     "title": "Активы",

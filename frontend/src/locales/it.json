@@ -415,6 +415,7 @@
     "transferDescription": "Descrizione",
     "transferNotes": "Note",
     "transferInfo": "Questo è un trasferimento — le modifiche a descrizione, data e note si applicheranno a entrambi i lati",
+    "transferLinkedTo": "Collegata a:",
     "transferTooltip": "I trasferimenti sono esclusi dai totali dei report e della dashboard",
     "installmentTooltip": "Piano rateale — {{count}} addebiti per un totale di {{total}}",
     "splitIntoInstallments": "Dividi in rate",
@@ -515,7 +516,15 @@
     "calendarAddIncome": "Aggiungi entrata",
     "calendarAddExpense": "Aggiungi spesa",
     "calendarSelectedDay": "Giorno selezionato",
-    "calendarNoItems": "Nessuna transazione in questo giorno"
+    "calendarNoItems": "Nessuna transazione in questo giorno",
+    "calendarMetric": "Dati",
+    "calendarBalanceMode": "Saldo",
+    "calendarActivityMode": "Attività",
+    "calendarActivityTrend": "Attività giornaliera",
+    "calendarNoActivity": "Nessuna attività questo mese",
+    "calendarNoMovements": "Nessun movimento",
+    "calendarActualNet": "Netto effettivo",
+    "calendarTransfersExcluded": "I trasferimenti non contano come entrate o spese"
   },
   "accounts": {
     "title": "Conti",
@@ -832,6 +841,7 @@
     "andOp": "E",
     "orOp": "O",
     "addCondition": "Aggiungi condizione",
+    "blankConditionValue": "Ogni condizione richiede un valore. Una condizione vuota corrisponderebbe a tutte le transazioni.",
     "addAction": "Aggiungi azione",
     "setCategory": "Imposta categoria",
     "setPayee": "Imposta beneficiario",
@@ -980,7 +990,10 @@
     "balanceImpact": "Impatto sul saldo",
     "importedWithExcluded": "{{imported}} importate, {{skipped}} saltate, {{excluded}} escluse",
     "suggested": "Suggerita",
-    "page": "Pagina {{current}} di {{total}}"
+    "page": "Pagina {{current}} di {{total}}",
+    "mapPayee": "Colonna del beneficiario",
+    "mapExternalId": "Colonna dell'ID transazione",
+    "mapNotes": "Colonna delle note"
   },
   "assets": {
     "title": "Beni",

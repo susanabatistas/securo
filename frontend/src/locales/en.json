@@ -418,6 +418,7 @@
     "transferDescription": "Description",
     "transferNotes": "Notes",
     "transferInfo": "This is a transfer — changes to description, date, and notes will apply to both sides",
+    "transferLinkedTo": "Linked to:",
     "transferTooltip": "Transfers are excluded from report and dashboard totals",
     "installmentTooltip": "Installment plan — {{count}} charges totaling {{total}}",
     "splitIntoInstallments": "Split into installments",
@@ -515,7 +516,15 @@
     "calendarAddIncome": "Add income",
     "calendarAddExpense": "Add expense",
     "calendarSelectedDay": "Selected day",
-    "calendarNoItems": "No transactions on this day"
+    "calendarNoItems": "No transactions on this day",
+    "calendarMetric": "Data",
+    "calendarBalanceMode": "Balance",
+    "calendarActivityMode": "Activity",
+    "calendarActivityTrend": "Daily activity",
+    "calendarNoActivity": "No activity this month",
+    "calendarNoMovements": "No movements",
+    "calendarActualNet": "Actual net",
+    "calendarTransfersExcluded": "Transfers are not counted as income or expenses"
   },
   "accounts": {
     "title": "Accounts",
@@ -832,6 +841,7 @@
     "andOp": "AND",
     "orOp": "OR",
     "addCondition": "Add condition",
+    "blankConditionValue": "Every condition needs a value. A blank one would match every transaction.",
     "addAction": "Add action",
     "setCategory": "Set category",
     "setPayee": "Set payee",
@@ -980,7 +990,10 @@
     "balanceImpact": "Balance impact",
     "importedWithExcluded": "{{imported}} imported, {{skipped}} skipped, {{excluded}} excluded",
     "suggested": "Suggested",
-    "page": "Page {{current}} of {{total}}"
+    "page": "Page {{current}} of {{total}}",
+    "mapPayee": "Payee column",
+    "mapExternalId": "Transaction ID column",
+    "mapNotes": "Notes column"
   },
   "assets": {
     "title": "Assets",
