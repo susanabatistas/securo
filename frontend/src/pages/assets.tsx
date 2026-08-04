@@ -405,61 +405,46 @@ const HoldingRow = memo(function HoldingRow({
   )
 })
 
-export default function AssetsPage() {
+type AssetDialogMode = { kind: 'create' } | { kind: 'edit'; asset: Asset } | null
+
+// Create/Edit Asset dialog, extracted to its own component so its form
+// state doesn't live on AssetsPage — before this, every keystroke here
+// re-rendered the entire page (holdings table, wallets, chart) because
+// that state lived there instead. Now typing only re-renders this dialog.
+const AssetDialog = memo(function AssetDialog({
+  mode,
+  onClose,
+  sortedWallets,
+  supportedCurrencies,
+  userCurrency,
+  locale,
+  dateLocale,
+  onRequestCreateWallet,
+  createWalletPending,
+  pendingWalletAssignment,
+  onChanged,
+}: {
+  mode: AssetDialogMode
+  onClose: () => void
+  sortedWallets: AssetGroup[]
+  supportedCurrencies: Array<{ code: string; symbol: string; name: string; flag: string }> | undefined
+  userCurrency: string
+  locale: string
+  dateLocale: string
+  onRequestCreateWallet: () => void
+  createWalletPending: boolean
+  pendingWalletAssignment: { id: string; nonce: number } | null
+  onChanged: () => void
+}) {
   const { t } = useTranslation()
-  const locale = useDisplayLocale()
-  const dateLocale = useDateLocale()
-  const { mask } = usePrivacyMode()
-  const { user } = useAuth()
-  const { canWrite } = useWorkspace()
-  const userCurrency = user?.preferences?.currency_display ?? 'USD'
-  const queryClient = useQueryClient()
+  const open = mode !== null
 
-  const { data: supportedCurrencies } = useQuery({
-    queryKey: ['currencies'],
-    queryFn: currenciesApi.list,
-    staleTime: Infinity,
-  })
-
-  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions'>('holdings')
-  // Holding id for the lightweight "add transaction to this holding" dialog,
-  // opened from the holdings table ("+ add buys") and the inline ledger.
-  const [addTxAssetId, setAddTxAssetId] = useState<string | null>(null)
-  const [dialogOpen, setDialogOpen] = useState(false)
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [pendingGrowthSave, setPendingGrowthSave] = useState<Record<string, unknown> | null>(null)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  // Stable prop for the memoized HoldingRow — functional update avoids
-  // needing expandedId in the dep array.
-  const onToggleExpand = useCallback((id: string) => {
-    setExpandedId(prev => prev === id ? null : id)
-  }, [])
-
-  // Wallet (AssetGroup) dialog state
-  const [walletDialogOpen, setWalletDialogOpen] = useState(false)
-  const [editingWallet, setEditingWallet] = useState<AssetGroup | null>(null)
-  const [walletFormName, setWalletFormName] = useState('')
-  const [walletFormColor, setWalletFormColor] = useState('#0EA5E9')
-  const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null)
-  // Collapsed wallet IDs — default is expanded (empty set), user can collapse manually
-  const [collapsedWallets, setCollapsedWallets] = useState<Set<string>>(new Set())
-  // Sold Assets section — collapsed by default so a portfolio with a long
-  // sell history doesn't clutter the page; the count stays visible in the
-  // header either way.
-  const [showSoldAssets, setShowSoldAssets] = useState(false)
-  // Asset being moved to a wallet (null = no picker open)
-  const [movingAsset, setMovingAsset] = useState<Asset | null>(null)
-
-  // Form state
   const [formName, setFormName] = useState('')
   const [formType, setFormType] = useState<string>('other')
   const [formCurrency, setFormCurrency] = useState(userCurrency)
   const [formGroupId, setFormGroupId] = useState<string>('')
   const [formMethod, setFormMethod] = useState<string>('manual')
-  // Tracks "+ New wallet" clicked from inside the asset dialog so the
-  // newly-created wallet auto-fills the picker on success.
-  const pendingAssignWalletToFormRef = useRef(false)
   const [formPurchaseDate, setFormPurchaseDate] = useState<string>('')
   const [formPurchasePrice, setFormPurchasePrice] = useState('')
   const [formSellDate, setFormSellDate] = useState<string>('')
@@ -486,131 +471,93 @@ export default function AssetsPage() {
   // "Add asset" and "Add transaction" stay consistent.
   const [formUnitPrice, setFormUnitPrice] = useState('')
   const [quoteLoading, setQuoteLoading] = useState(false)
+  const [pendingGrowthSave, setPendingGrowthSave] = useState<Record<string, unknown> | null>(null)
 
-  const { data: rawAssetsList, isLoading, isError: assetsLoadError } = useQuery({
-    queryKey: ['assets'],
-    queryFn: () => assets.list(false),
-  })
+  function resetMarketPriceForm() {
+    pickedSymbolRef.current = null
+    setFormTickerQuery('')
+    setTickerMatches([])
+    setSelectedQuote(null)
+    setFormUnits('')
+    setFormUnitPrice('')
+    setQuoteLoading(false)
+    setTickerSearchLoading(false)
+  }
 
-  // Active Collection filter (issue #105): when a collection is active, scope
-  // the Assets page to the assets in its wallets (asset_groups). A collection
-  // with no wallets → no assets shown. "All accounts" (null) → show everything.
-  const { activeWalletIds } = useCollectionFilter()
-  const assetsList = useMemo(() => {
-    if (!activeWalletIds) return rawAssetsList
-    const allowed = new Set(activeWalletIds)
-    return (rawAssetsList ?? []).filter((a) => a.group_id && allowed.has(a.group_id))
-  }, [rawAssetsList, activeWalletIds])
-
-  const { data: rawPortfolioData, isLoading: portfolioLoading } = useQuery({
-    queryKey: ['portfolio-trend'],
-    queryFn: () => assets.portfolioTrend(),
-  })
-  // Clicking a wallet in the holdings list scopes the chart above to just
-  // that wallet ("drill in"); clicking the same wallet again clears it.
-  const [chartFocusWalletId, setChartFocusWalletId] = useState<string | null>(null)
-  const onWalletClick = useCallback((id: string) => {
-    setChartFocusWalletId(prev => prev === id ? null : id)
-  }, [])
-
-  // Scope the portfolio chart + total to the active collection's wallets
-  // and/or the clicked wallet. Trend rows are keyed by asset id, so we keep
-  // only the in-scope asset columns and recompute each row's `_total`.
-  const portfolioData = useMemo(() => {
-    if (!activeWalletIds && !chartFocusWalletId) return rawPortfolioData
-    if (!rawPortfolioData) return rawPortfolioData
-    const allowed = activeWalletIds ? new Set(activeWalletIds) : null
-    const keptAssets = rawPortfolioData.assets.filter((a) => {
-      if (!a.group_id) return false
-      if (chartFocusWalletId && a.group_id !== chartFocusWalletId) return false
-      if (allowed && !allowed.has(a.group_id)) return false
-      return true
-    })
-    const keptIds = new Set(keptAssets.map((a) => a.id))
-    const trend = rawPortfolioData.trend.map((row) => {
-      const next: Record<string, unknown> = { date: (row as { date: unknown }).date }
-      let total = 0
-      for (const [k, v] of Object.entries(row)) {
-        if (k === 'date' || k === '_total') continue
-        if (keptIds.has(k)) {
-          next[k] = v
-          total += Number(v) || 0
+  // Reset (create) or populate (edit) the form whenever the dialog is
+  // asked to open in a new mode — replaces the old imperative
+  // openCreate()/openEdit() calls now that AssetsPage just flips `mode`.
+  useEffect(() => {
+    if (!mode) return
+    if (mode.kind === 'create') {
+      setEditingAsset(null)
+      setFormName('')
+      setFormType('other')
+      setFormCurrency(userCurrency)
+      setFormGroupId('')
+      setFormMethod('manual')
+      setFormPurchaseDate('')
+      setFormPurchasePrice('')
+      setFormSellDate('')
+      setFormSellPrice('')
+      setFormCurrentValue('')
+      setFormGrowthType('percentage')
+      setFormGrowthRate('')
+      setFormGrowthFrequency('monthly')
+      setFormGrowthStartDate('')
+      resetMarketPriceForm()
+    } else {
+      const asset = mode.asset
+      setEditingAsset(asset)
+      setFormName(asset.name)
+      setFormType(asset.type)
+      setFormCurrency(asset.currency)
+      setFormGroupId(asset.group_id ?? '')
+      setFormMethod(asset.valuation_method)
+      setFormPurchaseDate(asset.purchase_date ?? '')
+      setFormPurchasePrice(asset.purchase_price?.toString() ?? '')
+      setFormSellDate(asset.sell_date ?? '')
+      setFormSellPrice(asset.sell_price?.toString() ?? '')
+      setFormCurrentValue('')
+      setFormGrowthType(asset.growth_type ?? 'percentage')
+      setFormGrowthRate(asset.growth_rate?.toString() ?? '')
+      setFormGrowthFrequency(asset.growth_frequency ?? 'monthly')
+      setFormGrowthStartDate(asset.growth_start_date ?? '')
+      resetMarketPriceForm()
+      if (asset.valuation_method === 'market_price' && asset.ticker) {
+        setFormTickerQuery(asset.ticker)
+        setFormUnits(asset.units?.toString() ?? '')
+        // Synthesize a quote from the cached fields so the preview shows
+        // immediately — we skip a round-trip to yfinance on edit open.
+        if (asset.last_price != null) {
+          setSelectedQuote({
+            symbol: asset.ticker,
+            name: asset.name,
+            exchange: asset.ticker_exchange,
+            currency: asset.currency,
+            price: asset.last_price,
+            quote_type: null,
+          })
         }
       }
-      next._total = total
-      return next
-    })
-    const lastTotal = trend.length ? Number((trend[trend.length - 1] as { _total?: number })._total) || 0 : 0
-    return { ...rawPortfolioData, assets: keptAssets, trend, total: lastTotal }
-  }, [rawPortfolioData, activeWalletIds, chartFocusWalletId])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resetMarketPriceForm only touches local setters/refs
+  }, [mode, userCurrency])
 
-  // Memoized so `assetsByGroup` below (which depends on activeAssets) can
-  // actually skip recomputing across unrelated re-renders — a plain
-  // .filter() here would hand it a new array reference every render and
-  // silently defeat its useMemo cache.
-  const activeAssets = useMemo(
-    () => assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? [],
-    [assetsList],
-  )
-  const soldAssets = useMemo(
-    () => assetsList?.filter(a => a.sell_date) ?? [],
-    [assetsList],
-  )
-
-  // Publish a snapshot of what's on the Assets page so the global chat
-  // (⌘J) can answer "what does this chart mean / what are these
-  // wallets?" without needing the user to spell it out.
-  // Sold/archived assets are excluded here — their `current_value` is a
-  // stale snapshot from before the sale, not part of the live portfolio.
-  const totalValue = activeAssets.reduce(
-    (acc: number, a: { current_value?: number | null }) => acc + Number(a.current_value || 0),
-    0,
-  )
-  // Portfolio total in the user's primary currency — denominator for the
-  // "% da carteira" column in the holdings table.
-  const portfolioTotalPrimary = activeAssets.reduce(
-    (acc, a) => acc + Number(a.current_value_primary ?? a.current_value ?? 0),
-    0,
-  )
-  const byType: Record<string, number> = {}
-  for (const a of activeAssets as Array<{ type?: string; current_value?: number | null }>) {
-    if (!a.type) continue
-    byType[a.type] = (byType[a.type] || 0) + Number(a.current_value || 0)
-  }
-  const portfolioTotal = (portfolioData as { total?: number } | undefined)?.total
-  const assetsCtxKey = `${assetsList?.length ?? 0}:${totalValue.toFixed(2)}:${portfolioTotal ?? ''}`
-  useRegisterPageChatContext(
-    {
-      path: '/assets',
-      label: 'Assets',
-      summary:
-        `Portfolio overview page. ${assetsList?.length ?? 0} assets totaling ` +
-        `~${totalValue.toLocaleString(locale, { style: 'currency', currency: userCurrency })} ` +
-        `(by current_value). The portfolio chart shows value over time grouped by wallet or asset.`,
-      totals_by_type: byType,
-      asset_count: assetsList?.length ?? 0,
-      total_value: Number(totalValue.toFixed(2)),
-      hint: 'For exact per-asset numbers, use the get_net_worth or list_assets tools.',
-    },
-    assetsCtxKey,
-  )
-
-  // `refetchQueries` (vs. `invalidateQueries`) forces an immediate refetch
-  // regardless of stale-state heuristics. Our global staleTime of 5 min
-  // combined with the dialog-close re-render was sometimes leaving the
-  // asset list showing pre-edit data until the user manually reloaded.
-  // Wrapped in useCallback so it's a stable prop for the memoized HoldingRow.
-  const refetchAssetViews = useCallback(() => {
-    queryClient.refetchQueries({ queryKey: ['assets'] })
-    queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
-    queryClient.refetchQueries({ queryKey: ['dashboard'] })
-  }, [queryClient])
+  // Applies the wallet id from a "+ New Wallet" flow started inside this
+  // dialog — see AssetsPage's pendingAssignWalletToFormRef for the other
+  // half. Keyed on the nonce (not just the id) so re-creating a wallet
+  // with the same id twice in a row still re-fires.
+  useEffect(() => {
+    if (pendingWalletAssignment) setFormGroupId(pendingWalletAssignment.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingWalletAssignment?.nonce])
 
   const createMutation = useMutation({
     mutationFn: (data: Parameters<typeof assets.create>[0]) => assets.create(data),
     onSuccess: () => {
-      refetchAssetViews()
-      setDialogOpen(false)
+      onChanged()
+      onClose()
       toast.success(t('assets.created'))
     },
     onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
@@ -620,21 +567,10 @@ export default function AssetsPage() {
     mutationFn: ({ id, _regenerateGrowth, ...data }: Partial<Asset> & { id: string; _regenerateGrowth?: boolean }) =>
       assets.update(id, data, { regenerateGrowth: _regenerateGrowth }),
     onSuccess: () => {
-      refetchAssetViews()
-      setDialogOpen(false)
+      onChanged()
+      onClose()
       setEditingAsset(null)
       toast.success(t('assets.updated'))
-    },
-    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => assets.delete(id),
-    onSuccess: () => {
-      refetchAssetViews()
-      setDeletingId(null)
-      if (expandedId === deletingId) setExpandedId(null)
-      toast.success(t('assets.deleted'))
     },
     onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
   })
@@ -654,70 +590,8 @@ export default function AssetsPage() {
         quote_type: null,
       })
       setEditingAsset(updated)
-      refetchAssetViews()
+      onChanged()
       toast.success(t('assets.priceRefreshed'))
-    },
-    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
-  })
-
-  const { data: rawWalletsList } = useQuery({
-    queryKey: ['asset-groups'],
-    queryFn: () => assetGroups.list(),
-  })
-  const walletsList = useMemo(() => {
-    if (!activeWalletIds) return rawWalletsList
-    const allowed = new Set(activeWalletIds)
-    return (rawWalletsList ?? []).filter((w) => allowed.has(w.id))
-  }, [rawWalletsList, activeWalletIds])
-
-  const createWalletMutation = useMutation({
-    mutationFn: (data: { name: string; color: string }) =>
-      assetGroups.create({ name: data.name, color: data.color, icon: 'wallet' }),
-    onSuccess: (created) => {
-      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
-      setWalletDialogOpen(false)
-      setEditingWallet(null)
-      if (pendingAssignWalletToFormRef.current) {
-        setFormGroupId(created.id)
-        pendingAssignWalletToFormRef.current = false
-      }
-      toast.success(t('assets.walletCreated'))
-    },
-    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
-  })
-
-  const updateWalletMutation = useMutation({
-    mutationFn: ({ id, ...data }: { id: string; name: string; color: string }) =>
-      assetGroups.update(id, { name: data.name, color: data.color }),
-    onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
-      setWalletDialogOpen(false)
-      setEditingWallet(null)
-      toast.success(t('assets.walletUpdated'))
-    },
-    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
-  })
-
-  const deleteWalletMutation = useMutation({
-    mutationFn: (id: string) => assetGroups.delete(id),
-    onSuccess: () => {
-      // Deleting a wallet un-groups its assets (backend sets group_id=null).
-      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
-      queryClient.refetchQueries({ queryKey: ['assets'] })
-      setDeletingWalletId(null)
-      toast.success(t('assets.walletDeleted'))
-    },
-    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
-  })
-
-  const moveAssetMutation = useMutation({
-    mutationFn: ({ id, groupId }: { id: string; groupId: string | null }) =>
-      assets.update(id, { group_id: groupId } as Partial<Asset>),
-    onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['assets'] })
-      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
-      setMovingAsset(null)
-      toast.success(t('assets.moved'))
     },
     onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
   })
@@ -819,77 +693,6 @@ export default function AssetsPage() {
     }
   }
 
-  function resetMarketPriceForm() {
-    pickedSymbolRef.current = null
-    setFormTickerQuery('')
-    setTickerMatches([])
-    setSelectedQuote(null)
-    setFormUnits('')
-    setFormUnitPrice('')
-    setQuoteLoading(false)
-    setTickerSearchLoading(false)
-  }
-
-
-  function openCreate() {
-    setEditingAsset(null)
-    setFormName('')
-    setFormType('other')
-    setFormCurrency(userCurrency)
-    setFormGroupId('')
-    setFormMethod('manual')
-    setFormPurchaseDate('')
-    setFormPurchasePrice('')
-    setFormSellDate('')
-    setFormSellPrice('')
-    setFormCurrentValue('')
-    setFormGrowthType('percentage')
-    setFormGrowthRate('')
-    setFormGrowthFrequency('monthly')
-    setFormGrowthStartDate('')
-    resetMarketPriceForm()
-    setDialogOpen(true)
-  }
-
-  // useCallback so this is a stable prop for the memoized HoldingRow — the
-  // body only calls stable setState setters, so an empty dep array is safe.
-  const openEdit = useCallback((asset: Asset) => {
-    setEditingAsset(asset)
-    setFormName(asset.name)
-    setFormType(asset.type)
-    setFormCurrency(asset.currency)
-    setFormGroupId(asset.group_id ?? '')
-    setFormMethod(asset.valuation_method)
-    setFormPurchaseDate(asset.purchase_date ?? '')
-    setFormPurchasePrice(asset.purchase_price?.toString() ?? '')
-    setFormSellDate(asset.sell_date ?? '')
-    setFormSellPrice(asset.sell_price?.toString() ?? '')
-    setFormCurrentValue('')
-    setFormGrowthType(asset.growth_type ?? 'percentage')
-    setFormGrowthRate(asset.growth_rate?.toString() ?? '')
-    setFormGrowthFrequency(asset.growth_frequency ?? 'monthly')
-    setFormGrowthStartDate(asset.growth_start_date ?? '')
-    resetMarketPriceForm()
-    if (asset.valuation_method === 'market_price' && asset.ticker) {
-      setFormTickerQuery(asset.ticker)
-      setFormUnits(asset.units?.toString() ?? '')
-      // Synthesize a quote from the cached fields so the preview shows
-      // immediately — we skip a round-trip to yfinance on edit open.
-      if (asset.last_price != null) {
-        setSelectedQuote({
-          symbol: asset.ticker,
-          name: asset.name,
-          exchange: asset.ticker_exchange,
-          currency: asset.currency,
-          price: asset.last_price,
-          quote_type: null,
-        })
-      }
-    }
-    setDialogOpen(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resetMarketPriceForm only touches stable setters/refs, so it's safe to omit
-  }, [])
-
   function buildPayload() {
     const isMarket = formMethod === 'market_price'
     const payload: Record<string, unknown> = {
@@ -968,349 +771,10 @@ export default function AssetsPage() {
     setPendingGrowthSave(null)
   }
 
-  // Consolidated holdings table (issue #235). One row per holding (ticker),
-  // Investidor10/Status Invest style: Ativo · Quant. · Preço Médio ·
-  // Preço Atual · Rentabilidade · Saldo · % da carteira. Market-priced rows
-  // are fully populated; holdings with no recorded cost show "—" for the
-  // cost-based columns and offer a one-tap way to add their buys.
-  // Column header for a holdings section — same grid template as the rows.
-  function renderHoldingsHeader() {
-    return (
-      <div
-        className="grid items-center gap-2 px-3 py-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-border"
-        style={{ gridTemplateColumns: HOLDINGS_GRID }}
-      >
-        <div>{t('assets.colAsset')}</div>
-        <div className="text-right">{t('assets.colQuantity')}</div>
-        <div className="text-right">{t('assets.colAvgPrice')}</div>
-        <div className="text-right">{t('assets.colCurrentPrice')}</div>
-        <div className="text-right">{t('assets.colReturn')}</div>
-        <div className="text-right">{t('assets.colBalance')}</div>
-        <div className="text-right">{t('assets.colPortfolioPct')}</div>
-        <div />
-      </div>
-    )
-  }
-
-  // Wrap a set of holding rows in a horizontally-scrollable table shell so the
-  // columns stay aligned (and usable on narrow screens).
-  function renderHoldingsTable(rows: Asset[]) {
-    return (
-      <div className="rounded-xl border border-border bg-card shadow-sm overflow-x-auto">
-        <div className="min-w-[720px]">
-          {renderHoldingsHeader()}
-          {rows.map(asset => (
-            <HoldingRow
-              key={asset.id}
-              asset={asset}
-              portfolioTotalPrimary={portfolioTotalPrimary}
-              userCurrency={userCurrency}
-              locale={locale}
-              dateLocale={dateLocale}
-              mask={mask}
-              canWrite={canWrite}
-              isExpanded={expandedId === asset.id}
-              onToggleExpand={onToggleExpand}
-              onAddTransaction={setAddTxAssetId}
-              onMoveAsset={setMovingAsset}
-              onEdit={openEdit}
-              onDelete={setDeletingId}
-              onChanged={refetchAssetViews}
-            />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  // Bucket active assets by group_id so each wallet renders with its
-  // total and collapse toggle. Un-grouped actives go under a synthetic
-  // bucket rendered at the end.
-  const assetsByGroup = useMemo(() => {
-    const map = new Map<string | null, Asset[]>()
-    for (const a of activeAssets) {
-      const key = a.group_id ?? null
-      if (!map.has(key)) map.set(key, [])
-      map.get(key)!.push(a)
-    }
-    return map
-  }, [activeAssets])
-
-  const sortedWallets = useMemo(() => {
-    return (walletsList ?? []).slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
-  }, [walletsList])
-
-  const ungroupedAssets = assetsByGroup.get(null) ?? []
-
-  function toggleWalletCollapse(id: string) {
-    setCollapsedWallets(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  function openCreateWallet() {
-    setEditingWallet(null)
-    setWalletFormName('')
-    setWalletFormColor('#0EA5E9')
-    setWalletDialogOpen(true)
-  }
-
-  function openEditWallet(wallet: AssetGroup) {
-    setEditingWallet(wallet)
-    setWalletFormName(wallet.name)
-    setWalletFormColor(wallet.color)
-    setWalletDialogOpen(true)
-  }
-
-  function handleSaveWallet() {
-    const name = walletFormName.trim()
-    if (!name) return
-    if (editingWallet) {
-      updateWalletMutation.mutate({ id: editingWallet.id, name, color: walletFormColor })
-    } else {
-      createWalletMutation.mutate({ name, color: walletFormColor })
-    }
-  }
-
-  function renderWalletSection(wallet: AssetGroup, walletAssets: Asset[]) {
-    const isCollapsed = collapsedWallets.has(wallet.id)
-    const isFocused = chartFocusWalletId === wallet.id
-    const isSynced = wallet.source !== 'manual'
-    // Sum in wallet's reported current_value (already computed by backend).
-    // Fall back to the wallet's own rollup only when there are no assets to
-    // sum locally — a genuine zero total from `reduce` must not be treated
-    // as falsy and overridden by a possibly-stale backend value.
-    const perAssetTotal = walletAssets.reduce((s, a) => s + (a.current_value_primary ?? a.current_value ?? 0), 0)
-    const total = walletAssets.length > 0 ? perAssetTotal : (wallet.current_value_primary ?? wallet.current_value ?? 0)
-
-    // Only show the institution as a subtitle when it's actually
-    // additional information — if the user hasn't renamed the wallet,
-    // name and institution are identical and the subtitle would be
-    // redundant noise.
-    const showInstitutionSubtitle =
-      !!wallet.institution_name && wallet.institution_name !== wallet.name
-
-    return (
-      <div key={wallet.id} className="space-y-2">
-        <div className={`flex items-center gap-3 px-1 rounded-lg ${isFocused ? 'ring-1 ring-primary/40 bg-primary/5' : ''}`}>
-          <button
-            onClick={() => toggleWalletCollapse(wallet.id)}
-            className="flex items-center gap-1 shrink-0"
-            title={isCollapsed ? t('common.expand') : t('common.collapse')}
-          >
-            {isCollapsed ? (
-              <ChevronRight size={14} className="text-muted-foreground" />
-            ) : (
-              <ChevronDown size={14} className="text-muted-foreground" />
-            )}
-          </button>
-          <button
-            onClick={() => onWalletClick(wallet.id)}
-            title={t('assets.focusWalletChart')}
-            className="flex items-center gap-2 flex-1 min-w-0 group"
-          >
-            <div
-              className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-              style={{ backgroundColor: `${wallet.color}20` }}
-            >
-              <Wallet size={13} style={{ color: wallet.color }} />
-            </div>
-            <div className="flex flex-col items-start min-w-0 flex-1">
-              <div className="flex items-center gap-2 min-w-0 w-full">
-                <span className="text-sm font-semibold text-foreground truncate">{wallet.name}</span>
-                <span className="text-xs text-muted-foreground shrink-0">
-                  · {walletAssets.length} {t('assets.itemsCount')}
-                </span>
-              </div>
-              {showInstitutionSubtitle && (
-                <span className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
-                  <RefreshCw size={9} />
-                  {t('assets.syncedFrom', { source: wallet.institution_name })}
-                </span>
-              )}
-            </div>
-          </button>
-          <span className="text-sm font-bold tabular-nums text-foreground shrink-0">
-            {mask(formatCurrency(total, userCurrency, locale))}
-          </span>
-          {canWrite && (
-            <>
-              <button
-                onClick={() => openEditWallet(wallet)}
-                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title={t('assets.editWallet')}
-              >
-                <Pencil size={12} />
-              </button>
-              {!isSynced && (
-                <button
-                  onClick={() => setDeletingWalletId(wallet.id)}
-                  className="p-1 rounded-lg text-muted-foreground hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                  title={t('assets.deleteWallet')}
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-            </>
-          )}
-        </div>
-        {!isCollapsed && walletAssets.length > 0 && (
-          <div className="pl-4">
-            {renderHoldingsTable(walletAssets)}
-          </div>
-        )}
-        {!isCollapsed && walletAssets.length === 0 && (
-          <div className="pl-4 py-3 text-xs text-muted-foreground italic">
-            {t('assets.emptyWallet')}
-          </div>
-        )}
-      </div>
-    )
-  }
-
   return (
-    <div className="space-y-6">
-      <PageHeader
-        section={t('assets.title')}
-        title={t('assets.title')}
-        action={
-          canWrite ? (
-            <div className="flex items-center gap-2">
-              <Button onClick={openCreateWallet} variant="outline" className="gap-1.5">
-                <Wallet size={16} />
-                {t('assets.newWallet')}
-              </Button>
-              <Button onClick={openCreate} className="gap-1.5">
-                <Plus size={16} />
-                {t('assets.addAsset')}
-              </Button>
-            </div>
-          ) : undefined
-        }
-      />
-
-      {/* Holdings (consolidated by ticker) vs. the buy/sell ledger (#235) */}
-      <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
-        <button
-          onClick={() => setActiveTab('holdings')}
-          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'holdings' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-        >
-          {t('assets.tabHoldings')}
-        </button>
-        <button
-          onClick={() => setActiveTab('transactions')}
-          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'transactions' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-        >
-          {t('assets.tabTransactions')}
-        </button>
-      </div>
-
-      {activeTab === 'transactions' ? (
-        <AssetTransactionsTab
-          holdings={assetsList ?? []}
-          wallets={sortedWallets}
-          locale={locale}
-          dateLocale={dateLocale}
-          mask={mask}
-          canWrite={canWrite}
-          onChanged={refetchAssetViews}
-        />
-      ) : (
-      <>
-      {/* Portfolio Chart */}
-      {chartFocusWalletId && (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>{t('assets.chartFilteredByWallet', { wallet: sortedWallets.find(w => w.id === chartFocusWalletId)?.name ?? '' })}</span>
-          <button
-            type="button"
-            onClick={() => setChartFocusWalletId(null)}
-            className="font-medium text-primary hover:underline"
-          >
-            {t('assets.clearChartFilter')}
-          </button>
-        </div>
-      )}
-      {portfolioLoading ? (
-        <Skeleton className="h-64 rounded-xl" />
-      ) : (
-        portfolioData && portfolioData.trend.length > 0 && (
-          <PortfolioChart
-            data={portfolioData}
-            wallets={sortedWallets}
-            currency={userCurrency}
-            locale={locale}
-            dateLocale={dateLocale}
-            mask={mask}
-          />
-        )
-      )}
-
-      {isLoading ? (
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
-        </div>
-      ) : assetsLoadError ? (
-        // Distinct from the "no assets" empty state below — a failed fetch
-        // must never render as "you have zero assets" on a finance page.
-        <div className="text-center py-16">
-          <AlertTriangle className="mx-auto h-12 w-12 text-amber-500/70 mb-3" />
-          <p className="text-muted-foreground">{t('assets.loadError')}</p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          {/* Wallets (active assets grouped) */}
-          {(sortedWallets.length > 0 || ungroupedAssets.length > 0) && (
-            <div className="space-y-4">
-              {sortedWallets.map(w => renderWalletSection(w, assetsByGroup.get(w.id) ?? []))}
-
-              {ungroupedAssets.length > 0 && (
-                <div className="space-y-2">
-                  <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">
-                    {sortedWallets.length > 0 ? t('assets.ungrouped') : t('assets.activeAssets')}
-                  </h3>
-                  {renderHoldingsTable(ungroupedAssets)}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Sold Assets — collapsed by default (see showSoldAssets) */}
-          {soldAssets.length > 0 && (
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={() => setShowSoldAssets(v => !v)}
-                className="flex items-center gap-1.5 px-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
-              >
-                {showSoldAssets ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                {t('assets.soldAssets')}
-                <span className="normal-case font-normal">· {soldAssets.length} {t('assets.itemsCount')}</span>
-              </button>
-              {showSoldAssets && renderHoldingsTable(soldAssets)}
-            </div>
-          )}
-
-          {/* Only the true first-run empty state: no wallets to show their own
-              per-wallet empty message, no ungrouped assets, no sold assets.
-              When wallets exist (even empty ones), their own "empty" line
-              below each header is sufficient — showing this panel too would
-              be redundant. */}
-          {sortedWallets.length === 0 && activeAssets.length === 0 && soldAssets.length === 0 && (
-            <div className="text-center py-16">
-              <Package className="mx-auto h-12 w-12 text-muted-foreground/40 mb-3" />
-              <p className="text-muted-foreground">{t('assets.noAssets')}</p>
-            </div>
-          )}
-        </div>
-      )}
-      </>
-      )}
-
+    <>
       {/* Create/Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingAsset ? t('assets.editAsset') : t('assets.addAsset')}</DialogTitle>
@@ -1331,11 +795,8 @@ export default function AssetsPage() {
                 <button
                   type="button"
                   className="text-xs font-medium text-primary hover:underline disabled:opacity-50 disabled:no-underline"
-                  disabled={createWalletMutation.isPending}
-                  onClick={() => {
-                    pendingAssignWalletToFormRef.current = true
-                    openCreateWallet()
-                  }}
+                  disabled={createWalletPending}
+                  onClick={onRequestCreateWallet}
                 >
                   + {t('assets.newWallet')}
                 </button>
@@ -1693,7 +1154,7 @@ export default function AssetsPage() {
             })()}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+            <Button variant="outline" onClick={onClose}>
               {t('common.cancel')}
             </Button>
             <Button
@@ -1734,6 +1195,616 @@ export default function AssetsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </>
+  )
+})
+
+export default function AssetsPage() {
+  const { t } = useTranslation()
+  const locale = useDisplayLocale()
+  const dateLocale = useDateLocale()
+  const { mask } = usePrivacyMode()
+  const { user } = useAuth()
+  const { canWrite } = useWorkspace()
+  const userCurrency = user?.preferences?.currency_display ?? 'USD'
+  const queryClient = useQueryClient()
+
+  const { data: supportedCurrencies } = useQuery({
+    queryKey: ['currencies'],
+    queryFn: currenciesApi.list,
+    staleTime: Infinity,
+  })
+
+  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions'>('holdings')
+  // Holding id for the lightweight "add transaction to this holding" dialog,
+  // opened from the holdings table ("+ add buys") and the inline ledger.
+  const [addTxAssetId, setAddTxAssetId] = useState<string | null>(null)
+  // Drives the Create/Edit Asset dialog (a separate component — see
+  // AssetDialog above — so typing in it doesn't re-render this whole page).
+  const [assetDialogMode, setAssetDialogMode] = useState<AssetDialogMode>(null)
+  const openAssetDialog = useCallback((asset: Asset) => setAssetDialogMode({ kind: 'edit', asset }), [])
+  // Set when a wallet gets created from inside the asset dialog's
+  // "+ New Wallet" link, so the new id can flow back down once created.
+  const [pendingWalletAssignment, setPendingWalletAssignment] = useState<{ id: string; nonce: number } | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  // Stable prop for the memoized HoldingRow — functional update avoids
+  // needing expandedId in the dep array.
+  const onToggleExpand = useCallback((id: string) => {
+    setExpandedId(prev => prev === id ? null : id)
+  }, [])
+
+  // Wallet (AssetGroup) dialog state
+  const [walletDialogOpen, setWalletDialogOpen] = useState(false)
+  const [editingWallet, setEditingWallet] = useState<AssetGroup | null>(null)
+  const [walletFormName, setWalletFormName] = useState('')
+  const [walletFormColor, setWalletFormColor] = useState('#0EA5E9')
+  const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null)
+  // Collapsed wallet IDs — default is expanded (empty set), user can collapse manually
+  const [collapsedWallets, setCollapsedWallets] = useState<Set<string>>(new Set())
+  // Sold Assets section — collapsed by default so a portfolio with a long
+  // sell history doesn't clutter the page; the count stays visible in the
+  // header either way.
+  const [showSoldAssets, setShowSoldAssets] = useState(false)
+  // Asset being moved to a wallet (null = no picker open)
+  const [movingAsset, setMovingAsset] = useState<Asset | null>(null)
+
+  // Tracks "+ New wallet" clicked from inside the asset dialog so the
+  // newly-created wallet auto-fills the picker on success (see
+  // pendingWalletAssignment above, which carries the new id back down).
+  const pendingAssignWalletToFormRef = useRef(false)
+
+  const { data: rawAssetsList, isLoading, isError: assetsLoadError } = useQuery({
+    queryKey: ['assets'],
+    queryFn: () => assets.list(false),
+  })
+
+  // Active Collection filter (issue #105): when a collection is active, scope
+  // the Assets page to the assets in its wallets (asset_groups). A collection
+  // with no wallets → no assets shown. "All accounts" (null) → show everything.
+  const { activeWalletIds } = useCollectionFilter()
+  const assetsList = useMemo(() => {
+    if (!activeWalletIds) return rawAssetsList
+    const allowed = new Set(activeWalletIds)
+    return (rawAssetsList ?? []).filter((a) => a.group_id && allowed.has(a.group_id))
+  }, [rawAssetsList, activeWalletIds])
+
+  const { data: rawPortfolioData, isLoading: portfolioLoading } = useQuery({
+    queryKey: ['portfolio-trend'],
+    queryFn: () => assets.portfolioTrend(),
+  })
+  // Clicking a wallet in the holdings list scopes the chart above to just
+  // that wallet ("drill in"); clicking the same wallet again clears it.
+  const [chartFocusWalletId, setChartFocusWalletId] = useState<string | null>(null)
+  const onWalletClick = useCallback((id: string) => {
+    setChartFocusWalletId(prev => prev === id ? null : id)
+  }, [])
+
+  // Scope the portfolio chart + total to the active collection's wallets
+  // and/or the clicked wallet. Trend rows are keyed by asset id, so we keep
+  // only the in-scope asset columns and recompute each row's `_total`.
+  const portfolioData = useMemo(() => {
+    if (!activeWalletIds && !chartFocusWalletId) return rawPortfolioData
+    if (!rawPortfolioData) return rawPortfolioData
+    const allowed = activeWalletIds ? new Set(activeWalletIds) : null
+    const keptAssets = rawPortfolioData.assets.filter((a) => {
+      if (!a.group_id) return false
+      if (chartFocusWalletId && a.group_id !== chartFocusWalletId) return false
+      if (allowed && !allowed.has(a.group_id)) return false
+      return true
+    })
+    const keptIds = new Set(keptAssets.map((a) => a.id))
+    const trend = rawPortfolioData.trend.map((row) => {
+      const next: Record<string, unknown> = { date: (row as { date: unknown }).date }
+      let total = 0
+      for (const [k, v] of Object.entries(row)) {
+        if (k === 'date' || k === '_total') continue
+        if (keptIds.has(k)) {
+          next[k] = v
+          total += Number(v) || 0
+        }
+      }
+      next._total = total
+      return next
+    })
+    const lastTotal = trend.length ? Number((trend[trend.length - 1] as { _total?: number })._total) || 0 : 0
+    return { ...rawPortfolioData, assets: keptAssets, trend, total: lastTotal }
+  }, [rawPortfolioData, activeWalletIds, chartFocusWalletId])
+
+  // Memoized so `assetsByGroup` below (which depends on activeAssets) can
+  // actually skip recomputing across unrelated re-renders — a plain
+  // .filter() here would hand it a new array reference every render and
+  // silently defeat its useMemo cache.
+  const activeAssets = useMemo(
+    () => assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? [],
+    [assetsList],
+  )
+  const soldAssets = useMemo(
+    () => assetsList?.filter(a => a.sell_date) ?? [],
+    [assetsList],
+  )
+
+  // Publish a snapshot of what's on the Assets page so the global chat
+  // (⌘J) can answer "what does this chart mean / what are these
+  // wallets?" without needing the user to spell it out.
+  // Sold/archived assets are excluded here — their `current_value` is a
+  // stale snapshot from before the sale, not part of the live portfolio.
+  const totalValue = activeAssets.reduce(
+    (acc: number, a: { current_value?: number | null }) => acc + Number(a.current_value || 0),
+    0,
+  )
+  // Portfolio total in the user's primary currency — denominator for the
+  // "% da carteira" column in the holdings table.
+  const portfolioTotalPrimary = activeAssets.reduce(
+    (acc, a) => acc + Number(a.current_value_primary ?? a.current_value ?? 0),
+    0,
+  )
+  const byType: Record<string, number> = {}
+  for (const a of activeAssets as Array<{ type?: string; current_value?: number | null }>) {
+    if (!a.type) continue
+    byType[a.type] = (byType[a.type] || 0) + Number(a.current_value || 0)
+  }
+  const portfolioTotal = (portfolioData as { total?: number } | undefined)?.total
+  const assetsCtxKey = `${assetsList?.length ?? 0}:${totalValue.toFixed(2)}:${portfolioTotal ?? ''}`
+  useRegisterPageChatContext(
+    {
+      path: '/assets',
+      label: 'Assets',
+      summary:
+        `Portfolio overview page. ${assetsList?.length ?? 0} assets totaling ` +
+        `~${totalValue.toLocaleString(locale, { style: 'currency', currency: userCurrency })} ` +
+        `(by current_value). The portfolio chart shows value over time grouped by wallet or asset.`,
+      totals_by_type: byType,
+      asset_count: assetsList?.length ?? 0,
+      total_value: Number(totalValue.toFixed(2)),
+      hint: 'For exact per-asset numbers, use the get_net_worth or list_assets tools.',
+    },
+    assetsCtxKey,
+  )
+
+  // `refetchQueries` (vs. `invalidateQueries`) forces an immediate refetch
+  // regardless of stale-state heuristics. Our global staleTime of 5 min
+  // combined with the dialog-close re-render was sometimes leaving the
+  // asset list showing pre-edit data until the user manually reloaded.
+  // Wrapped in useCallback so it's a stable prop for the memoized HoldingRow.
+  const refetchAssetViews = useCallback(() => {
+    queryClient.refetchQueries({ queryKey: ['assets'] })
+    queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
+    queryClient.refetchQueries({ queryKey: ['dashboard'] })
+  }, [queryClient])
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => assets.delete(id),
+    onSuccess: () => {
+      refetchAssetViews()
+      setDeletingId(null)
+      if (expandedId === deletingId) setExpandedId(null)
+      toast.success(t('assets.deleted'))
+    },
+    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
+  })
+
+  const { data: rawWalletsList } = useQuery({
+    queryKey: ['asset-groups'],
+    queryFn: () => assetGroups.list(),
+  })
+  const walletsList = useMemo(() => {
+    if (!activeWalletIds) return rawWalletsList
+    const allowed = new Set(activeWalletIds)
+    return (rawWalletsList ?? []).filter((w) => allowed.has(w.id))
+  }, [rawWalletsList, activeWalletIds])
+
+  const createWalletMutation = useMutation({
+    mutationFn: (data: { name: string; color: string }) =>
+      assetGroups.create({ name: data.name, color: data.color, icon: 'wallet' }),
+    onSuccess: (created) => {
+      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
+      setWalletDialogOpen(false)
+      setEditingWallet(null)
+      if (pendingAssignWalletToFormRef.current) {
+        setPendingWalletAssignment({ id: created.id, nonce: Date.now() })
+        pendingAssignWalletToFormRef.current = false
+      }
+      toast.success(t('assets.walletCreated'))
+    },
+    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
+  })
+
+  const updateWalletMutation = useMutation({
+    mutationFn: ({ id, ...data }: { id: string; name: string; color: string }) =>
+      assetGroups.update(id, { name: data.name, color: data.color }),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
+      setWalletDialogOpen(false)
+      setEditingWallet(null)
+      toast.success(t('assets.walletUpdated'))
+    },
+    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
+  })
+
+  const deleteWalletMutation = useMutation({
+    mutationFn: (id: string) => assetGroups.delete(id),
+    onSuccess: () => {
+      // Deleting a wallet un-groups its assets (backend sets group_id=null).
+      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
+      queryClient.refetchQueries({ queryKey: ['assets'] })
+      setDeletingWalletId(null)
+      toast.success(t('assets.walletDeleted'))
+    },
+    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
+  })
+
+  const moveAssetMutation = useMutation({
+    mutationFn: ({ id, groupId }: { id: string; groupId: string | null }) =>
+      assets.update(id, { group_id: groupId } as Partial<Asset>),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['assets'] })
+      queryClient.refetchQueries({ queryKey: ['asset-groups'] })
+      setMovingAsset(null)
+      toast.success(t('assets.moved'))
+    },
+    onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
+  })
+
+  // Consolidated holdings table (issue #235). One row per holding (ticker),
+  // Investidor10/Status Invest style: Ativo · Quant. · Preço Médio ·
+  // Preço Atual · Rentabilidade · Saldo · % da carteira. Market-priced rows
+  // are fully populated; holdings with no recorded cost show "—" for the
+  // cost-based columns and offer a one-tap way to add their buys.
+  // Column header for a holdings section — same grid template as the rows.
+  function renderHoldingsHeader() {
+    return (
+      <div
+        className="grid items-center gap-2 px-3 py-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-border"
+        style={{ gridTemplateColumns: HOLDINGS_GRID }}
+      >
+        <div>{t('assets.colAsset')}</div>
+        <div className="text-right">{t('assets.colQuantity')}</div>
+        <div className="text-right">{t('assets.colAvgPrice')}</div>
+        <div className="text-right">{t('assets.colCurrentPrice')}</div>
+        <div className="text-right">{t('assets.colReturn')}</div>
+        <div className="text-right">{t('assets.colBalance')}</div>
+        <div className="text-right">{t('assets.colPortfolioPct')}</div>
+        <div />
+      </div>
+    )
+  }
+
+  // Wrap a set of holding rows in a horizontally-scrollable table shell so the
+  // columns stay aligned (and usable on narrow screens).
+  function renderHoldingsTable(rows: Asset[]) {
+    return (
+      <div className="rounded-xl border border-border bg-card shadow-sm overflow-x-auto">
+        <div className="min-w-[720px]">
+          {renderHoldingsHeader()}
+          {rows.map(asset => (
+            <HoldingRow
+              key={asset.id}
+              asset={asset}
+              portfolioTotalPrimary={portfolioTotalPrimary}
+              userCurrency={userCurrency}
+              locale={locale}
+              dateLocale={dateLocale}
+              mask={mask}
+              canWrite={canWrite}
+              isExpanded={expandedId === asset.id}
+              onToggleExpand={onToggleExpand}
+              onAddTransaction={setAddTxAssetId}
+              onMoveAsset={setMovingAsset}
+              onEdit={openAssetDialog}
+              onDelete={setDeletingId}
+              onChanged={refetchAssetViews}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  // Bucket active assets by group_id so each wallet renders with its
+  // total and collapse toggle. Un-grouped actives go under a synthetic
+  // bucket rendered at the end.
+  const assetsByGroup = useMemo(() => {
+    const map = new Map<string | null, Asset[]>()
+    for (const a of activeAssets) {
+      const key = a.group_id ?? null
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(a)
+    }
+    return map
+  }, [activeAssets])
+
+  const sortedWallets = useMemo(() => {
+    return (walletsList ?? []).slice().sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+  }, [walletsList])
+
+  const ungroupedAssets = assetsByGroup.get(null) ?? []
+
+  function toggleWalletCollapse(id: string) {
+    setCollapsedWallets(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function openCreateWallet() {
+    setEditingWallet(null)
+    setWalletFormName('')
+    setWalletFormColor('#0EA5E9')
+    setWalletDialogOpen(true)
+  }
+
+  function openEditWallet(wallet: AssetGroup) {
+    setEditingWallet(wallet)
+    setWalletFormName(wallet.name)
+    setWalletFormColor(wallet.color)
+    setWalletDialogOpen(true)
+  }
+
+  function handleSaveWallet() {
+    const name = walletFormName.trim()
+    if (!name) return
+    if (editingWallet) {
+      updateWalletMutation.mutate({ id: editingWallet.id, name, color: walletFormColor })
+    } else {
+      createWalletMutation.mutate({ name, color: walletFormColor })
+    }
+  }
+
+  function renderWalletSection(wallet: AssetGroup, walletAssets: Asset[]) {
+    const isCollapsed = collapsedWallets.has(wallet.id)
+    const isFocused = chartFocusWalletId === wallet.id
+    const isSynced = wallet.source !== 'manual'
+    // Sum in wallet's reported current_value (already computed by backend).
+    // Fall back to the wallet's own rollup only when there are no assets to
+    // sum locally — a genuine zero total from `reduce` must not be treated
+    // as falsy and overridden by a possibly-stale backend value.
+    const perAssetTotal = walletAssets.reduce((s, a) => s + (a.current_value_primary ?? a.current_value ?? 0), 0)
+    const total = walletAssets.length > 0 ? perAssetTotal : (wallet.current_value_primary ?? wallet.current_value ?? 0)
+
+    // Only show the institution as a subtitle when it's actually
+    // additional information — if the user hasn't renamed the wallet,
+    // name and institution are identical and the subtitle would be
+    // redundant noise.
+    const showInstitutionSubtitle =
+      !!wallet.institution_name && wallet.institution_name !== wallet.name
+
+    return (
+      <div key={wallet.id} className="space-y-2">
+        <div className={`flex items-center gap-3 px-1 rounded-lg ${isFocused ? 'ring-1 ring-primary/40 bg-primary/5' : ''}`}>
+          <button
+            onClick={() => toggleWalletCollapse(wallet.id)}
+            className="flex items-center gap-1 shrink-0"
+            title={isCollapsed ? t('common.expand') : t('common.collapse')}
+          >
+            {isCollapsed ? (
+              <ChevronRight size={14} className="text-muted-foreground" />
+            ) : (
+              <ChevronDown size={14} className="text-muted-foreground" />
+            )}
+          </button>
+          <button
+            onClick={() => onWalletClick(wallet.id)}
+            title={t('assets.focusWalletChart')}
+            className="flex items-center gap-2 flex-1 min-w-0 group"
+          >
+            <div
+              className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
+              style={{ backgroundColor: `${wallet.color}20` }}
+            >
+              <Wallet size={13} style={{ color: wallet.color }} />
+            </div>
+            <div className="flex flex-col items-start min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0 w-full">
+                <span className="text-sm font-semibold text-foreground truncate">{wallet.name}</span>
+                <span className="text-xs text-muted-foreground shrink-0">
+                  · {walletAssets.length} {t('assets.itemsCount')}
+                </span>
+              </div>
+              {showInstitutionSubtitle && (
+                <span className="text-[11px] text-muted-foreground truncate flex items-center gap-1">
+                  <RefreshCw size={9} />
+                  {t('assets.syncedFrom', { source: wallet.institution_name })}
+                </span>
+              )}
+            </div>
+          </button>
+          <span className="text-sm font-bold tabular-nums text-foreground shrink-0">
+            {mask(formatCurrency(total, userCurrency, locale))}
+          </span>
+          {canWrite && (
+            <>
+              <button
+                onClick={() => openEditWallet(wallet)}
+                className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title={t('assets.editWallet')}
+              >
+                <Pencil size={12} />
+              </button>
+              {!isSynced && (
+                <button
+                  onClick={() => setDeletingWalletId(wallet.id)}
+                  className="p-1 rounded-lg text-muted-foreground hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                  title={t('assets.deleteWallet')}
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </>
+          )}
+        </div>
+        {!isCollapsed && walletAssets.length > 0 && (
+          <div className="pl-4">
+            {renderHoldingsTable(walletAssets)}
+          </div>
+        )}
+        {!isCollapsed && walletAssets.length === 0 && (
+          <div className="pl-4 py-3 text-xs text-muted-foreground italic">
+            {t('assets.emptyWallet')}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        section={t('assets.title')}
+        title={t('assets.title')}
+        action={
+          canWrite ? (
+            <div className="flex items-center gap-2">
+              <Button onClick={openCreateWallet} variant="outline" className="gap-1.5">
+                <Wallet size={16} />
+                {t('assets.newWallet')}
+              </Button>
+              <Button onClick={() => setAssetDialogMode({ kind: 'create' })} className="gap-1.5">
+                <Plus size={16} />
+                {t('assets.addAsset')}
+              </Button>
+            </div>
+          ) : undefined
+        }
+      />
+
+      {/* Holdings (consolidated by ticker) vs. the buy/sell ledger (#235) */}
+      <div className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+        <button
+          onClick={() => setActiveTab('holdings')}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'holdings' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          {t('assets.tabHoldings')}
+        </button>
+        <button
+          onClick={() => setActiveTab('transactions')}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'transactions' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          {t('assets.tabTransactions')}
+        </button>
+      </div>
+
+      {activeTab === 'transactions' ? (
+        <AssetTransactionsTab
+          holdings={assetsList ?? []}
+          wallets={sortedWallets}
+          locale={locale}
+          dateLocale={dateLocale}
+          mask={mask}
+          canWrite={canWrite}
+          onChanged={refetchAssetViews}
+        />
+      ) : (
+      <>
+      {/* Portfolio Chart */}
+      {chartFocusWalletId && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{t('assets.chartFilteredByWallet', { wallet: sortedWallets.find(w => w.id === chartFocusWalletId)?.name ?? '' })}</span>
+          <button
+            type="button"
+            onClick={() => setChartFocusWalletId(null)}
+            className="font-medium text-primary hover:underline"
+          >
+            {t('assets.clearChartFilter')}
+          </button>
+        </div>
+      )}
+      {portfolioLoading ? (
+        <Skeleton className="h-64 rounded-xl" />
+      ) : (
+        portfolioData && portfolioData.trend.length > 0 && (
+          <PortfolioChart
+            data={portfolioData}
+            wallets={sortedWallets}
+            currency={userCurrency}
+            locale={locale}
+            dateLocale={dateLocale}
+            mask={mask}
+            focusedWalletId={chartFocusWalletId}
+            onWalletClick={onWalletClick}
+          />
+        )
+      )}
+
+      {isLoading ? (
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
+        </div>
+      ) : assetsLoadError ? (
+        // Distinct from the "no assets" empty state below — a failed fetch
+        // must never render as "you have zero assets" on a finance page.
+        <div className="text-center py-16">
+          <AlertTriangle className="mx-auto h-12 w-12 text-amber-500/70 mb-3" />
+          <p className="text-muted-foreground">{t('assets.loadError')}</p>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Wallets (active assets grouped) */}
+          {(sortedWallets.length > 0 || ungroupedAssets.length > 0) && (
+            <div className="space-y-4">
+              {sortedWallets.map(w => renderWalletSection(w, assetsByGroup.get(w.id) ?? []))}
+
+              {ungroupedAssets.length > 0 && (
+                <div className="space-y-2">
+                  <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">
+                    {sortedWallets.length > 0 ? t('assets.ungrouped') : t('assets.activeAssets')}
+                  </h3>
+                  {renderHoldingsTable(ungroupedAssets)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Sold Assets — collapsed by default (see showSoldAssets) */}
+          {soldAssets.length > 0 && (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowSoldAssets(v => !v)}
+                className="flex items-center gap-1.5 px-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors"
+              >
+                {showSoldAssets ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {t('assets.soldAssets')}
+                <span className="normal-case font-normal">· {soldAssets.length} {t('assets.itemsCount')}</span>
+              </button>
+              {showSoldAssets && renderHoldingsTable(soldAssets)}
+            </div>
+          )}
+
+          {/* Only the true first-run empty state: no wallets to show their own
+              per-wallet empty message, no ungrouped assets, no sold assets.
+              When wallets exist (even empty ones), their own "empty" line
+              below each header is sufficient — showing this panel too would
+              be redundant. */}
+          {sortedWallets.length === 0 && activeAssets.length === 0 && soldAssets.length === 0 && (
+            <div className="text-center py-16">
+              <Package className="mx-auto h-12 w-12 text-muted-foreground/40 mb-3" />
+              <p className="text-muted-foreground">{t('assets.noAssets')}</p>
+            </div>
+          )}
+        </div>
+      )}
+      </>
+      )}
+
+      <AssetDialog
+        mode={assetDialogMode}
+        onClose={() => setAssetDialogMode(null)}
+        sortedWallets={sortedWallets}
+        supportedCurrencies={supportedCurrencies}
+        userCurrency={userCurrency}
+        locale={locale}
+        dateLocale={dateLocale}
+        onRequestCreateWallet={() => {
+          pendingAssignWalletToFormRef.current = true
+          openCreateWallet()
+        }}
+        createWalletPending={createWalletMutation.isPending}
+        pendingWalletAssignment={pendingWalletAssignment}
+        onChanged={refetchAssetViews}
+      />
 
       {/* Delete Confirmation */}
       <Dialog open={!!deletingId} onOpenChange={() => setDeletingId(null)}>
@@ -1893,13 +1964,17 @@ const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6',
 // though its props (data/wallets are already useMemo'd upstream) hadn't
 // changed. Props are all primitives/memoized values, so shallow-equal
 // bailout is safe and effective.
-const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask }: {
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
   locale: string
   dateLocale: string
   mask: (v: string) => string
+  // Clicking a wallet's legend entry scopes the chart to just that wallet
+  // (only meaningful in "By Wallet" mode — each entry there is one wallet).
+  focusedWalletId: string | null
+  onWalletClick: (walletId: string) => void
 }) {
   const { t } = useTranslation()
   // Default to wallet mode: with many synced CDBs the asset view turns
@@ -2133,14 +2208,35 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      {/* Legend */}
+      {/* Legend — in wallet mode, each entry is clickable to scope the
+          chart above to just that wallet (issue: "click a wallet in the
+          legend and the graph shows only that wallet"). */}
       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 px-1">
-        {sortedSeries.map(s => (
-          <div key={s.key} className="flex items-center gap-1.5">
-            <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-            <span className="text-[11px] text-muted-foreground">{s.name}</span>
-          </div>
-        ))}
+        {sortedSeries.map(s => {
+          const walletId = mode === 'wallet' && s.key.startsWith('w_') ? s.key.slice(2) : null
+          const isFocused = walletId != null && walletId === focusedWalletId
+          const content = (
+            <>
+              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color }} />
+              <span className={`text-[11px] ${isFocused ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>{s.name}</span>
+            </>
+          )
+          return walletId ? (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => onWalletClick(walletId)}
+              title={t('assets.focusWalletChart')}
+              className={`flex items-center gap-1.5 rounded px-1 -mx-1 hover:bg-muted/50 transition-colors ${isFocused ? 'bg-muted/50' : ''}`}
+            >
+              {content}
+            </button>
+          ) : (
+            <div key={s.key} className="flex items-center gap-1.5">
+              {content}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
