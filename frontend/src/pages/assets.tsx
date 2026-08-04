@@ -2038,17 +2038,37 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
     return data.trend.filter(r => (r.date as string) >= cutoffStr)
   }, [data.trend, period])
 
-  // Portfolio return % over time — (value - invested) / invested per date.
+  // Portfolio return % over the *selected period*, rebased to 0% at the
+  // window's first point — like a stock chart's "3M" view showing what YOUR
+  // money did during that window, not the running since-inception total.
   // A single aggregate line (not broken out by wallet/asset): with
   // contributions arriving at different times, per-wallet "return" would mix
   // new capital with actual gains in a way that's more confusing than useful.
+  //
+  // Chained (time-weighted-style) sub-period returns so a deposit doesn't
+  // read as a gain: each step's return excludes that step's own contribution
+  // (invested_i - invested_{i-1}, the ledger's cost-basis delta — an
+  // approximation for sells, whose real cash-out is at sale price not cost,
+  // but exact for the common case of adding money), then those returns are
+  // geometrically linked. This is the same idea as Modified Dietz / a
+  // simplified TWR, not full GIPS-grade performance accounting.
   const returnTrend = useMemo(() => {
-    return periodTrend.map(row => {
+    if (periodTrend.length === 0) return []
+    let index = 1
+    let prevTotal = Number(periodTrend[0]._total) || 0
+    return periodTrend.map((row, i) => {
       const total = Number(row._total) || 0
       const invested = Number(row._invested) || 0
+      if (i > 0) {
+        const prevInvested = Number(periodTrend[i - 1]._invested) || 0
+        const contribution = invested - prevInvested
+        const subReturn = prevTotal > 0 ? (total - contribution - prevTotal) / prevTotal : 0
+        index *= (1 + subReturn)
+        prevTotal = total
+      }
       return {
         date: row.date as string,
-        return_pct: invested > 0 ? ((total - invested) / invested) * 100 : null,
+        return_pct: (index - 1) * 100,
         total,
         invested,
       }
@@ -2340,7 +2360,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
               content={({ active, payload, label }) => {
                 if (!active || !payload?.length) return null
                 const row = returnTrend.find(r => r.date === label)
-                if (!row || row.return_pct == null) return null
+                if (!row) return null
                 return (
                   <div style={{ background: 'var(--card)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: '0.75rem', fontSize: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', padding: '10px 12px' }}>
                     <p style={{ fontWeight: 600, marginBottom: 6 }}>
@@ -2367,7 +2387,6 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
-              connectNulls
               isAnimationActive={false}
             />
           </RechartsLineChart>
