@@ -2290,7 +2290,11 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
                 )
               }}
             />
-            {/* Stacked mode shows cumulative bands; line mode plots each series' own value. */}
+            {/* Stacked mode shows cumulative bands; line mode plots each series' own value.
+                Animation off — switching period/mode/wallet-focus swaps the whole
+                dataset, and Recharts' default draw-in re-animates from scratch on
+                every such change, which reads as a broken/half-drawn chart if you
+                glance at it (or screenshot it) mid-transition. */}
             {sortedSeries.map(s => (
               <Area
                 key={s.key}
@@ -2302,12 +2306,13 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
                 fill={isStacked ? `url(#portfolio-grad-${s.key})` : 'none'}
                 dot={false}
                 activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
+                isAnimationActive={false}
               />
             ))}
             {/* Hidden total for tooltip. Kept out of the chart in line mode so the
                 Y axis scales to the largest single series instead of the portfolio
                 total, which would otherwise squash every line against the baseline. */}
-            <Area dataKey="_total" stroke="none" fill="none" dot={false} activeDot={false} hide={!isStacked} />
+            <Area dataKey="_total" stroke="none" fill="none" dot={false} activeDot={false} hide={!isStacked} isAnimationActive={false} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
@@ -2363,6 +2368,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
               dot={false}
               activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
               connectNulls
+              isAnimationActive={false}
             />
           </RechartsLineChart>
         </ResponsiveContainer>
