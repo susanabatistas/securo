@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, memo } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -19,6 +19,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DatePickerInput } from '@/components/ui/date-picker-input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote } from '@/types'
 import {
   Home,
@@ -186,6 +187,11 @@ function assetTypeFromQuoteType(quoteType: string | null | undefined): string {
       return 'investment'
   }
 }
+// `real_estate` -> `assets.typeRealEstate`. Shared by the type dropdown and
+// the holdings table row so the two i18n lookups never drift apart.
+function assetTypeI18nKey(type: string): string {
+  return `assets.type${type.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()).replace(/^./, c => c.toUpperCase())}`
+}
 const VALUATION_METHODS = ['manual', 'growth_rule', 'market_price'] as const
 const GROWTH_TYPES = ['percentage', 'absolute'] as const
 const GROWTH_FREQUENCIES = ['daily', 'weekly', 'monthly', 'yearly'] as const
@@ -205,6 +211,199 @@ function assetErrorMessage(e: unknown, fallback: string): string {
   if (typeof detail === 'string' && detail.trim()) return detail
   return resp?.status ? `${fallback} (${resp.status})` : fallback
 }
+
+// Shared by the ledger's add/edit-transaction dialog and the "add transaction
+// to this holding" dialog: no shorting, so a sell can't exceed what's held.
+function isOversell(kind: 'buy' | 'sell', quantity: string, heldUnits: number): boolean {
+  return kind === 'sell' && !!quantity && parseFloat(quantity) > heldUnits
+}
+
+// The ledger total preview ("qty × price ± fee") shown in both buy/sell
+// dialogs — identical math and markup, kept in one place so they can't drift.
+function TxTotalPreview({ quantity, price, fee, kind, currency, locale }: {
+  quantity: string; price: string; fee: string; kind: 'buy' | 'sell'; currency: string; locale: string
+}) {
+  const { t } = useTranslation()
+  if (!quantity || !price || parseFloat(quantity) <= 0) return null
+  const total = parseFloat(quantity) * parseFloat(price) + (fee ? parseFloat(fee) : 0) * (kind === 'buy' ? 1 : -1)
+  return (
+    <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30">
+      <span className="text-xs font-medium text-muted-foreground">{t('assets.txTotal')}</span>
+      <span className="text-sm font-bold tabular-nums text-foreground">{formatCurrency(total, currency, locale)}</span>
+    </div>
+  )
+}
+
+// One row of the holdings table. All props are primitives/stable callbacks
+// (see AssetsPage's useCallback-wrapped handlers), so memo() lets an
+// unrelated parent re-render — e.g. a keystroke in the Add Asset dialog —
+// skip every row except the one actually toggled/edited.
+const HoldingRow = memo(function HoldingRow({
+  asset,
+  portfolioTotalPrimary,
+  userCurrency,
+  locale,
+  dateLocale,
+  mask,
+  canWrite,
+  isExpanded,
+  onToggleExpand,
+  onAddTransaction,
+  onMoveAsset,
+  onEdit,
+  onDelete,
+  onChanged,
+}: {
+  asset: Asset
+  portfolioTotalPrimary: number
+  userCurrency: string
+  locale: string
+  dateLocale: string
+  mask: (v: string) => string
+  canWrite: boolean
+  isExpanded: boolean
+  onToggleExpand: (id: string) => void
+  onAddTransaction: (id: string) => void
+  onMoveAsset: (asset: Asset) => void
+  onEdit: (asset: Asset) => void
+  onDelete: (id: string) => void
+  onChanged: () => void
+}) {
+  const { t } = useTranslation()
+  const config = getTypeConfig(asset.type)
+  const Icon = config.icon
+  const isSynced = asset.source !== 'manual'
+  const isMarketPriced = asset.valuation_method === 'market_price'
+  const isProviderOwned = isSynced && !isMarketPriced
+  const hasCost = asset.average_price != null && asset.total_invested != null
+  const returnPct =
+    hasCost && asset.gain_loss != null && asset.total_invested
+      ? (asset.gain_loss / asset.total_invested) * 100
+      : null
+  const pctOfPortfolio =
+    portfolioTotalPrimary > 0 && asset.current_value_primary != null
+      ? (asset.current_value_primary / portfolioTotalPrimary) * 100
+      : null
+  const needsBuys = isMarketPriced && !hasCost && !asset.sell_date
+
+  return (
+    <div className="border-b border-border last:border-b-0">
+      <div
+        className="grid items-center gap-2 px-3 py-3 cursor-pointer hover:bg-muted/20 transition-colors text-sm"
+        style={{ gridTemplateColumns: HOLDINGS_GRID }}
+        onClick={() => onToggleExpand(asset.id)}
+      >
+        {/* Ativo */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <AssetIcon logoUrl={asset.logo_url} Icon={Icon} colorClass={config.color} bgClass={config.bg} size={16} tile="w-8 h-8" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-foreground truncate">{asset.ticker && !asset.ticker.startsWith('TD:') ? asset.ticker : asset.name}</span>
+              {needsBuys && (
+                <Badge
+                  variant="outline"
+                  className="text-[9px] px-1 py-0 text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30 gap-0.5 shrink-0"
+                  title={t('assets.noPriceWarning')}
+                >
+                  <AlertTriangle size={9} />
+                  {t('assets.noPriceBadge')}
+                </Badge>
+              )}
+              {asset.sell_date && (
+                <Badge variant="outline" className="text-[9px] px-1 py-0 text-rose-600 border-rose-200">{t('assets.sold')}</Badge>
+              )}
+              {isSynced && !isMarketPriced && (
+                <Badge variant="outline" className="text-[9px] px-1 py-0 text-sky-600 border-sky-200">{t('assets.synced')}</Badge>
+              )}
+            </div>
+            <span className="text-[11px] text-muted-foreground truncate block">{asset.ticker && !asset.ticker.startsWith('TD:') ? asset.name : (asset.ticker?.startsWith('TD:') ? 'Tesouro Direto' : t(assetTypeI18nKey(asset.type)))}</span>
+          </div>
+        </div>
+        {/* Quant. */}
+        <div className="text-right tabular-nums text-muted-foreground">
+          {asset.units != null ? mask(`${asset.units}`) : '—'}
+        </div>
+        {/* Preço Médio */}
+        <div className="text-right tabular-nums">
+          {asset.average_price != null ? mask(formatCurrency(asset.average_price, asset.currency, locale)) : (
+            needsBuys && canWrite ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); onAddTransaction(asset.id) }}
+                className="text-[11px] font-medium text-primary hover:underline"
+              >
+                + {t('assets.addBuys')}
+              </button>
+            ) : <span className="text-muted-foreground">—</span>
+          )}
+        </div>
+        {/* Preço Atual */}
+        <div className="text-right tabular-nums text-muted-foreground">
+          {asset.last_price != null ? mask(formatCurrency(asset.last_price, asset.currency, locale)) : '—'}
+        </div>
+        {/* Rentabilidade */}
+        <div className="text-right tabular-nums">
+          {returnPct != null ? (
+            <span className={returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}>
+              {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}%
+            </span>
+          ) : <span className="text-muted-foreground">—</span>}
+        </div>
+        {/* Saldo */}
+        <div className="text-right tabular-nums">
+          {asset.current_value != null ? (
+            <>
+              <span className="font-semibold text-foreground">{mask(formatCurrency(asset.current_value, asset.currency, locale))}</span>
+              {asset.current_value_primary != null && asset.currency !== userCurrency && (
+                <span className="block text-[10px] text-muted-foreground">{mask(formatCurrency(asset.current_value_primary, userCurrency, locale))}</span>
+              )}
+            </>
+          ) : <span className="text-muted-foreground">—</span>}
+        </div>
+        {/* % carteira */}
+        <div className="text-right tabular-nums text-muted-foreground">
+          {pctOfPortfolio != null ? `${pctOfPortfolio.toFixed(1)}%` : '—'}
+        </div>
+        {/* actions */}
+        <div className="flex items-center justify-end gap-0.5">
+          {canWrite && (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); onMoveAsset(asset) }} title={t('assets.moveToWallet')} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                <FolderInput size={13} />
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); if (!isProviderOwned) onEdit(asset) }} disabled={isProviderOwned} title={isProviderOwned ? t('assets.syncedReadOnly') : t('common.edit')} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                <Pencil size={13} />
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); if (!isProviderOwned) onDelete(asset.id) }} disabled={isProviderOwned} title={isProviderOwned ? t('assets.syncedReadOnly') : t('common.delete')} className="p-1 rounded text-muted-foreground hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+                <Trash2 size={13} />
+              </button>
+            </>
+          )}
+          {isExpanded ? <ChevronUp size={15} className="text-muted-foreground" /> : <ChevronDown size={15} className="text-muted-foreground" />}
+        </div>
+      </div>
+
+      {isExpanded && (
+        isMarketPriced ? (
+          <>
+            {/* Value-evolution chart on top, then the buy/sell ledger. */}
+            <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} chartOnly />
+            <HoldingLedger
+              asset={asset}
+              locale={locale}
+              dateLocale={dateLocale}
+              mask={mask}
+              canWrite={canWrite}
+              onAdd={() => onAddTransaction(asset.id)}
+              onChanged={onChanged}
+            />
+          </>
+        ) : (
+          <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} />
+        )
+      )}
+    </div>
+  )
+})
 
 export default function AssetsPage() {
   const { t } = useTranslation()
@@ -226,12 +425,16 @@ export default function AssetsPage() {
   // Holding id for the lightweight "add transaction to this holding" dialog,
   // opened from the holdings table ("+ add buys") and the inline ledger.
   const [addTxAssetId, setAddTxAssetId] = useState<string | null>(null)
-  const openAddTransaction = (id: string) => setAddTxAssetId(id)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [pendingGrowthSave, setPendingGrowthSave] = useState<Record<string, unknown> | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  // Stable prop for the memoized HoldingRow — functional update avoids
+  // needing expandedId in the dep array.
+  const onToggleExpand = useCallback((id: string) => {
+    setExpandedId(prev => prev === id ? null : id)
+  }, [])
 
   // Wallet (AssetGroup) dialog state
   const [walletDialogOpen, setWalletDialogOpen] = useState(false)
@@ -284,7 +487,7 @@ export default function AssetsPage() {
   const [formUnitPrice, setFormUnitPrice] = useState('')
   const [quoteLoading, setQuoteLoading] = useState(false)
 
-  const { data: rawAssetsList, isLoading } = useQuery({
+  const { data: rawAssetsList, isLoading, isError: assetsLoadError } = useQuery({
     queryKey: ['assets'],
     queryFn: () => assets.list(false),
   })
@@ -299,17 +502,30 @@ export default function AssetsPage() {
     return (rawAssetsList ?? []).filter((a) => a.group_id && allowed.has(a.group_id))
   }, [rawAssetsList, activeWalletIds])
 
-  const { data: rawPortfolioData } = useQuery({
+  const { data: rawPortfolioData, isLoading: portfolioLoading } = useQuery({
     queryKey: ['portfolio-trend'],
     queryFn: () => assets.portfolioTrend(),
   })
-  // Scope the portfolio chart + total to the active collection's wallets too.
-  // Trend rows are keyed by asset id, so we keep only the in-collection asset
-  // columns and recompute each row's `_total`.
+  // Clicking a wallet in the holdings list scopes the chart above to just
+  // that wallet ("drill in"); clicking the same wallet again clears it.
+  const [chartFocusWalletId, setChartFocusWalletId] = useState<string | null>(null)
+  const onWalletClick = useCallback((id: string) => {
+    setChartFocusWalletId(prev => prev === id ? null : id)
+  }, [])
+
+  // Scope the portfolio chart + total to the active collection's wallets
+  // and/or the clicked wallet. Trend rows are keyed by asset id, so we keep
+  // only the in-scope asset columns and recompute each row's `_total`.
   const portfolioData = useMemo(() => {
-    if (!activeWalletIds || !rawPortfolioData) return rawPortfolioData
-    const allowed = new Set(activeWalletIds)
-    const keptAssets = rawPortfolioData.assets.filter((a) => a.group_id && allowed.has(a.group_id))
+    if (!activeWalletIds && !chartFocusWalletId) return rawPortfolioData
+    if (!rawPortfolioData) return rawPortfolioData
+    const allowed = activeWalletIds ? new Set(activeWalletIds) : null
+    const keptAssets = rawPortfolioData.assets.filter((a) => {
+      if (!a.group_id) return false
+      if (chartFocusWalletId && a.group_id !== chartFocusWalletId) return false
+      if (allowed && !allowed.has(a.group_id)) return false
+      return true
+    })
     const keptIds = new Set(keptAssets.map((a) => a.id))
     const trend = rawPortfolioData.trend.map((row) => {
       const next: Record<string, unknown> = { date: (row as { date: unknown }).date }
@@ -326,23 +542,38 @@ export default function AssetsPage() {
     })
     const lastTotal = trend.length ? Number((trend[trend.length - 1] as { _total?: number })._total) || 0 : 0
     return { ...rawPortfolioData, assets: keptAssets, trend, total: lastTotal }
-  }, [rawPortfolioData, activeWalletIds])
+  }, [rawPortfolioData, activeWalletIds, chartFocusWalletId])
+
+  // Memoized so `assetsByGroup` below (which depends on activeAssets) can
+  // actually skip recomputing across unrelated re-renders — a plain
+  // .filter() here would hand it a new array reference every render and
+  // silently defeat its useMemo cache.
+  const activeAssets = useMemo(
+    () => assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? [],
+    [assetsList],
+  )
+  const soldAssets = useMemo(
+    () => assetsList?.filter(a => a.sell_date) ?? [],
+    [assetsList],
+  )
 
   // Publish a snapshot of what's on the Assets page so the global chat
   // (⌘J) can answer "what does this chart mean / what are these
   // wallets?" without needing the user to spell it out.
-  const totalValue = (assetsList ?? []).reduce(
+  // Sold/archived assets are excluded here — their `current_value` is a
+  // stale snapshot from before the sale, not part of the live portfolio.
+  const totalValue = activeAssets.reduce(
     (acc: number, a: { current_value?: number | null }) => acc + Number(a.current_value || 0),
     0,
   )
   // Portfolio total in the user's primary currency — denominator for the
   // "% da carteira" column in the holdings table.
-  const portfolioTotalPrimary = (assetsList ?? []).reduce(
+  const portfolioTotalPrimary = activeAssets.reduce(
     (acc, a) => acc + Number(a.current_value_primary ?? a.current_value ?? 0),
     0,
   )
   const byType: Record<string, number> = {}
-  for (const a of (assetsList ?? []) as Array<{ type?: string; current_value?: number | null }>) {
+  for (const a of activeAssets as Array<{ type?: string; current_value?: number | null }>) {
     if (!a.type) continue
     byType[a.type] = (byType[a.type] || 0) + Number(a.current_value || 0)
   }
@@ -354,7 +585,7 @@ export default function AssetsPage() {
       label: 'Assets',
       summary:
         `Portfolio overview page. ${assetsList?.length ?? 0} assets totaling ` +
-        `~${totalValue.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} ` +
+        `~${totalValue.toLocaleString(locale, { style: 'currency', currency: userCurrency })} ` +
         `(by current_value). The portfolio chart shows value over time grouped by wallet or asset.`,
       totals_by_type: byType,
       asset_count: assetsList?.length ?? 0,
@@ -368,11 +599,12 @@ export default function AssetsPage() {
   // regardless of stale-state heuristics. Our global staleTime of 5 min
   // combined with the dialog-close re-render was sometimes leaving the
   // asset list showing pre-edit data until the user manually reloaded.
-  function refetchAssetViews() {
+  // Wrapped in useCallback so it's a stable prop for the memoized HoldingRow.
+  const refetchAssetViews = useCallback(() => {
     queryClient.refetchQueries({ queryKey: ['assets'] })
     queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
     queryClient.refetchQueries({ queryKey: ['dashboard'] })
-  }
+  }, [queryClient])
 
   const createMutation = useMutation({
     mutationFn: (data: Parameters<typeof assets.create>[0]) => assets.create(data),
@@ -525,19 +757,6 @@ export default function AssetsPage() {
     return Math.round(current * 100) / 100
   }, [formMethod, formPurchasePrice, formGrowthRate, formGrowthType, formGrowthFrequency, formGrowthStartDate, formPurchaseDate])
 
-  // Memoized so `assetsByGroup` below (which depends on activeAssets) can
-  // actually skip recomputing across unrelated re-renders — a plain
-  // .filter() here would hand it a new array reference every render and
-  // silently defeat its useMemo cache.
-  const activeAssets = useMemo(
-    () => assetsList?.filter(a => !a.sell_date && !a.is_archived) ?? [],
-    [assetsList],
-  )
-  const soldAssets = useMemo(
-    () => assetsList?.filter(a => a.sell_date) ?? [],
-    [assetsList],
-  )
-
   // Debounced ticker search. Runs only when the market-price method is
   // selected and the query is non-trivial — keeps the autocomplete snappy
   // without flooding the yfinance-backed endpoint.
@@ -632,7 +851,9 @@ export default function AssetsPage() {
     setDialogOpen(true)
   }
 
-  function openEdit(asset: Asset) {
+  // useCallback so this is a stable prop for the memoized HoldingRow — the
+  // body only calls stable setState setters, so an empty dep array is safe.
+  const openEdit = useCallback((asset: Asset) => {
     setEditingAsset(asset)
     setFormName(asset.name)
     setFormType(asset.type)
@@ -666,7 +887,8 @@ export default function AssetsPage() {
       }
     }
     setDialogOpen(true)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resetMarketPriceForm only touches stable setters/refs, so it's safe to omit
+  }, [])
 
   function buildPayload() {
     const isMarket = formMethod === 'market_price'
@@ -751,143 +973,6 @@ export default function AssetsPage() {
   // Preço Atual · Rentabilidade · Saldo · % da carteira. Market-priced rows
   // are fully populated; holdings with no recorded cost show "—" for the
   // cost-based columns and offer a one-tap way to add their buys.
-  function renderHoldingRow(asset: Asset) {
-    const config = getTypeConfig(asset.type)
-    const Icon = config.icon
-    const isExpanded = expandedId === asset.id
-    const isSynced = asset.source !== 'manual'
-    const isMarketPriced = asset.valuation_method === 'market_price'
-    const isProviderOwned = isSynced && !isMarketPriced
-    const hasCost = asset.average_price != null && asset.total_invested != null
-    const returnPct =
-      hasCost && asset.gain_loss != null && asset.total_invested
-        ? (asset.gain_loss / asset.total_invested) * 100
-        : null
-    const pctOfPortfolio =
-      portfolioTotalPrimary > 0 && asset.current_value_primary != null
-        ? (asset.current_value_primary / portfolioTotalPrimary) * 100
-        : null
-    const needsBuys = isMarketPriced && !hasCost && !asset.sell_date
-
-    return (
-      <div key={asset.id} className="border-b border-border last:border-b-0">
-        <div
-          className="grid items-center gap-2 px-3 py-3 cursor-pointer hover:bg-muted/20 transition-colors text-sm"
-          style={{ gridTemplateColumns: HOLDINGS_GRID }}
-          onClick={() => setExpandedId(isExpanded ? null : asset.id)}
-        >
-          {/* Ativo */}
-          <div className="flex items-center gap-2.5 min-w-0">
-            <AssetIcon logoUrl={asset.logo_url} Icon={Icon} colorClass={config.color} bgClass={config.bg} size={16} tile="w-8 h-8" />
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="font-semibold text-foreground truncate">{asset.ticker && !asset.ticker.startsWith('TD:') ? asset.ticker : asset.name}</span>
-                {needsBuys && (
-                  <Badge
-                    variant="outline"
-                    className="text-[9px] px-1 py-0 text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30 gap-0.5 shrink-0"
-                    title={t('assets.noPriceWarning')}
-                  >
-                    <AlertTriangle size={9} />
-                    {t('assets.noPriceBadge')}
-                  </Badge>
-                )}
-                {asset.sell_date && (
-                  <Badge variant="outline" className="text-[9px] px-1 py-0 text-rose-600 border-rose-200">{t('assets.sold')}</Badge>
-                )}
-                {isSynced && !isMarketPriced && (
-                  <Badge variant="outline" className="text-[9px] px-1 py-0 text-sky-600 border-sky-200">{t('assets.synced')}</Badge>
-                )}
-              </div>
-              <span className="text-[11px] text-muted-foreground truncate block">{asset.ticker && !asset.ticker.startsWith('TD:') ? asset.name : (asset.ticker?.startsWith('TD:') ? 'Tesouro Direto' : t(`assets.type${asset.type.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()).replace(/^./, c => c.toUpperCase())}`))}</span>
-            </div>
-          </div>
-          {/* Quant. */}
-          <div className="text-right tabular-nums text-muted-foreground">
-            {asset.units != null ? mask(`${asset.units}`) : '—'}
-          </div>
-          {/* Preço Médio */}
-          <div className="text-right tabular-nums">
-            {asset.average_price != null ? mask(formatCurrency(asset.average_price, asset.currency, locale)) : (
-              needsBuys && canWrite ? (
-                <button
-                  onClick={(e) => { e.stopPropagation(); openAddTransaction(asset.id) }}
-                  className="text-[11px] font-medium text-primary hover:underline"
-                >
-                  + {t('assets.addBuys')}
-                </button>
-              ) : <span className="text-muted-foreground">—</span>
-            )}
-          </div>
-          {/* Preço Atual */}
-          <div className="text-right tabular-nums text-muted-foreground">
-            {asset.last_price != null ? mask(formatCurrency(asset.last_price, asset.currency, locale)) : '—'}
-          </div>
-          {/* Rentabilidade */}
-          <div className="text-right tabular-nums">
-            {returnPct != null ? (
-              <span className={returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}>
-                {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}%
-              </span>
-            ) : <span className="text-muted-foreground">—</span>}
-          </div>
-          {/* Saldo */}
-          <div className="text-right tabular-nums">
-            {asset.current_value != null ? (
-              <>
-                <span className="font-semibold text-foreground">{mask(formatCurrency(asset.current_value, asset.currency, locale))}</span>
-                {asset.current_value_primary != null && asset.currency !== userCurrency && (
-                  <span className="block text-[10px] text-muted-foreground">{mask(formatCurrency(asset.current_value_primary, userCurrency, locale))}</span>
-                )}
-              </>
-            ) : <span className="text-muted-foreground">—</span>}
-          </div>
-          {/* % carteira */}
-          <div className="text-right tabular-nums text-muted-foreground">
-            {pctOfPortfolio != null ? `${pctOfPortfolio.toFixed(1)}%` : '—'}
-          </div>
-          {/* actions */}
-          <div className="flex items-center justify-end gap-0.5">
-            {canWrite && (
-              <>
-                <button onClick={(e) => { e.stopPropagation(); setMovingAsset(asset) }} title={t('assets.moveToWallet')} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
-                  <FolderInput size={13} />
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); if (!isProviderOwned) openEdit(asset) }} disabled={isProviderOwned} title={isProviderOwned ? t('assets.syncedReadOnly') : t('common.edit')} className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
-                  <Pencil size={13} />
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); if (!isProviderOwned) setDeletingId(asset.id) }} disabled={isProviderOwned} title={isProviderOwned ? t('assets.syncedReadOnly') : t('common.delete')} className="p-1 rounded text-muted-foreground hover:text-rose-600 hover:bg-rose-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
-                  <Trash2 size={13} />
-                </button>
-              </>
-            )}
-            {isExpanded ? <ChevronUp size={15} className="text-muted-foreground" /> : <ChevronDown size={15} className="text-muted-foreground" />}
-          </div>
-        </div>
-
-        {isExpanded && (
-          isMarketPriced ? (
-            <>
-              {/* Value-evolution chart on top, then the buy/sell ledger. */}
-              <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} chartOnly />
-              <HoldingLedger
-                asset={asset}
-                locale={locale}
-                dateLocale={dateLocale}
-                mask={mask}
-                canWrite={canWrite}
-                onAdd={() => openAddTransaction(asset.id)}
-                onChanged={refetchAssetViews}
-              />
-            </>
-          ) : (
-            <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} />
-          )
-        )}
-      </div>
-    )
-  }
-
   // Column header for a holdings section — same grid template as the rows.
   function renderHoldingsHeader() {
     return (
@@ -914,7 +999,25 @@ export default function AssetsPage() {
       <div className="rounded-xl border border-border bg-card shadow-sm overflow-x-auto">
         <div className="min-w-[720px]">
           {renderHoldingsHeader()}
-          {rows.map(renderHoldingRow)}
+          {rows.map(asset => (
+            <HoldingRow
+              key={asset.id}
+              asset={asset}
+              portfolioTotalPrimary={portfolioTotalPrimary}
+              userCurrency={userCurrency}
+              locale={locale}
+              dateLocale={dateLocale}
+              mask={mask}
+              canWrite={canWrite}
+              isExpanded={expandedId === asset.id}
+              onToggleExpand={onToggleExpand}
+              onAddTransaction={setAddTxAssetId}
+              onMoveAsset={setMovingAsset}
+              onEdit={openEdit}
+              onDelete={setDeletingId}
+              onChanged={refetchAssetViews}
+            />
+          ))}
         </div>
       </div>
     )
@@ -974,10 +1077,14 @@ export default function AssetsPage() {
 
   function renderWalletSection(wallet: AssetGroup, walletAssets: Asset[]) {
     const isCollapsed = collapsedWallets.has(wallet.id)
+    const isFocused = chartFocusWalletId === wallet.id
     const isSynced = wallet.source !== 'manual'
     // Sum in wallet's reported current_value (already computed by backend).
-    // Fall back to per-asset sum if the rollup is stale after a move.
-    const total = walletAssets.reduce((s, a) => s + (a.current_value_primary ?? a.current_value ?? 0), 0) || wallet.current_value_primary || wallet.current_value
+    // Fall back to the wallet's own rollup only when there are no assets to
+    // sum locally — a genuine zero total from `reduce` must not be treated
+    // as falsy and overridden by a possibly-stale backend value.
+    const perAssetTotal = walletAssets.reduce((s, a) => s + (a.current_value_primary ?? a.current_value ?? 0), 0)
+    const total = walletAssets.length > 0 ? perAssetTotal : (wallet.current_value_primary ?? wallet.current_value ?? 0)
 
     // Only show the institution as a subtitle when it's actually
     // additional information — if the user hasn't renamed the wallet,
@@ -988,16 +1095,23 @@ export default function AssetsPage() {
 
     return (
       <div key={wallet.id} className="space-y-2">
-        <div className="flex items-center gap-3 px-1">
+        <div className={`flex items-center gap-3 px-1 rounded-lg ${isFocused ? 'ring-1 ring-primary/40 bg-primary/5' : ''}`}>
           <button
             onClick={() => toggleWalletCollapse(wallet.id)}
-            className="flex items-center gap-2 flex-1 min-w-0 group"
+            className="flex items-center gap-1 shrink-0"
+            title={isCollapsed ? t('common.expand') : t('common.collapse')}
           >
             {isCollapsed ? (
               <ChevronRight size={14} className="text-muted-foreground" />
             ) : (
               <ChevronDown size={14} className="text-muted-foreground" />
             )}
+          </button>
+          <button
+            onClick={() => onWalletClick(wallet.id)}
+            title={t('assets.focusWalletChart')}
+            className="flex items-center gap-2 flex-1 min-w-0 group"
+          >
             <div
               className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
               style={{ backgroundColor: `${wallet.color}20` }}
@@ -1107,20 +1221,43 @@ export default function AssetsPage() {
       ) : (
       <>
       {/* Portfolio Chart */}
-      {portfolioData && portfolioData.trend.length > 0 && (
-        <PortfolioChart
-          data={portfolioData}
-          wallets={sortedWallets}
-          currency={userCurrency}
-          locale={locale}
-          dateLocale={dateLocale}
-          mask={mask}
-        />
+      {chartFocusWalletId && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{t('assets.chartFilteredByWallet', { wallet: sortedWallets.find(w => w.id === chartFocusWalletId)?.name ?? '' })}</span>
+          <button
+            type="button"
+            onClick={() => setChartFocusWalletId(null)}
+            className="font-medium text-primary hover:underline"
+          >
+            {t('assets.clearChartFilter')}
+          </button>
+        </div>
+      )}
+      {portfolioLoading ? (
+        <Skeleton className="h-64 rounded-xl" />
+      ) : (
+        portfolioData && portfolioData.trend.length > 0 && (
+          <PortfolioChart
+            data={portfolioData}
+            wallets={sortedWallets}
+            currency={userCurrency}
+            locale={locale}
+            dateLocale={dateLocale}
+            mask={mask}
+          />
+        )
       )}
 
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)}
+        </div>
+      ) : assetsLoadError ? (
+        // Distinct from the "no assets" empty state below — a failed fetch
+        // must never render as "you have zero assets" on a finance page.
+        <div className="text-center py-16">
+          <AlertTriangle className="mx-auto h-12 w-12 text-amber-500/70 mb-3" />
+          <p className="text-muted-foreground">{t('assets.loadError')}</p>
         </div>
       ) : (
         <div className="space-y-6">
@@ -1156,7 +1293,12 @@ export default function AssetsPage() {
             </div>
           )}
 
-          {activeAssets.length === 0 && soldAssets.length === 0 && (
+          {/* Only the true first-run empty state: no wallets to show their own
+              per-wallet empty message, no ungrouped assets, no sold assets.
+              When wallets exist (even empty ones), their own "empty" line
+              below each header is sufficient — showing this panel too would
+              be redundant. */}
+          {sortedWallets.length === 0 && activeAssets.length === 0 && soldAssets.length === 0 && (
             <div className="text-center py-16">
               <Package className="mx-auto h-12 w-12 text-muted-foreground/40 mb-3" />
               <p className="text-muted-foreground">{t('assets.noAssets')}</p>
@@ -1176,8 +1318,8 @@ export default function AssetsPage() {
           <div className="space-y-4">
             {/* Name */}
             <div className="space-y-2">
-              <Label>{t('assets.name')}</Label>
-              <Input value={formName} onChange={e => setFormName(e.target.value)} />
+              <Label htmlFor="asset-name">{t('assets.name')}</Label>
+              <Input id="asset-name" value={formName} onChange={e => setFormName(e.target.value)} />
             </div>
 
             {/* Wallet picker — lets users place the asset in a specific
@@ -1185,7 +1327,7 @@ export default function AssetsPage() {
                 "Ungrouped" and moving it after (issue #138). */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <Label>{t('assets.wallet')}</Label>
+                <Label htmlFor="asset-wallet">{t('assets.wallet')}</Label>
                 <button
                   type="button"
                   className="text-xs font-medium text-primary hover:underline disabled:opacity-50 disabled:no-underline"
@@ -1198,46 +1340,48 @@ export default function AssetsPage() {
                   + {t('assets.newWallet')}
                 </button>
               </div>
-              <select
-                className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
-                value={formGroupId}
-                onChange={e => setFormGroupId(e.target.value)}
-              >
-                <option value="">{t('assets.noWallet')}</option>
-                {sortedWallets.map(w => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
-              </select>
+              <Select value={formGroupId || '__none__'} onValueChange={v => setFormGroupId(v === '__none__' ? '' : v)}>
+                <SelectTrigger id="asset-wallet" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">{t('assets.noWallet')}</SelectItem>
+                  {sortedWallets.map(w => (
+                    <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Type + Currency */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{t('assets.type')}</Label>
-                <select
-                  className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
-                  value={formType}
-                  onChange={e => setFormType(e.target.value)}
-                >
-                  {ASSET_TYPES.map(at => (
-                    <option key={at} value={at}>
-                      {t(`assets.type${at.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()).replace(/^./, c => c.toUpperCase())}`)}
-                    </option>
-                  ))}
-                </select>
+                <Label htmlFor="asset-type">{t('assets.type')}</Label>
+                <Select value={formType} onValueChange={setFormType}>
+                  <SelectTrigger id="asset-type" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ASSET_TYPES.map(at => (
+                      <SelectItem key={at} value={at}>
+                        {t(assetTypeI18nKey(at))}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
-                <Label>{t('assets.currency')}</Label>
-                <select
-                  className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full disabled:opacity-60 disabled:cursor-not-allowed"
-                  value={formCurrency}
-                  disabled={formMethod === 'market_price'}
-                  onChange={e => setFormCurrency(e.target.value)}
-                >
-                  {(supportedCurrencies ?? [{ code: userCurrency, symbol: userCurrency, name: userCurrency, flag: '' }]).map((c) => (
-                    <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
-                  ))}
-                </select>
+                <Label htmlFor="asset-currency">{t('assets.currency')}</Label>
+                <Select value={formCurrency} disabled={formMethod === 'market_price'} onValueChange={setFormCurrency}>
+                  <SelectTrigger id="asset-currency" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(supportedCurrencies ?? [{ code: userCurrency, symbol: userCurrency, name: userCurrency, flag: '' }]).map((c) => (
+                      <SelectItem key={c.code} value={c.code}>{c.flag} {c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -1271,9 +1415,10 @@ export default function AssetsPage() {
             {formMethod === 'market_price' && (
               <div className="space-y-3 p-3.5 rounded-xl border border-primary/20 bg-primary/5">
                 <div className="space-y-2">
-                  <Label>{t('assets.ticker')}</Label>
+                  <Label htmlFor="asset-ticker">{t('assets.ticker')}</Label>
                   <div className="relative">
                     <Input
+                      id="asset-ticker"
                       placeholder={t('assets.tickerPlaceholder')}
                       value={formTickerQuery}
                       disabled={!!editingAsset}
@@ -1376,8 +1521,9 @@ export default function AssetsPage() {
                 {!editingAsset ? (
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-2">
-                      <Label>{t('assets.quantity')}</Label>
+                      <Label htmlFor="asset-units">{t('assets.quantity')}</Label>
                       <Input
+                        id="asset-units"
                         type="number"
                         step="any"
                         min="0"
@@ -1387,8 +1533,9 @@ export default function AssetsPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>{t('assets.unitPrice')}</Label>
+                      <Label htmlFor="asset-unit-price">{t('assets.unitPrice')}</Label>
                       <Input
+                        id="asset-unit-price"
                         type="number"
                         step="any"
                         min="0"
@@ -1400,8 +1547,8 @@ export default function AssetsPage() {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    <Label>{t('assets.quantity')}</Label>
-                    <Input type="number" step="any" min="0" value={formUnits} onChange={e => setFormUnits(e.target.value)} placeholder="10" />
+                    <Label htmlFor="asset-units">{t('assets.quantity')}</Label>
+                    <Input id="asset-units" type="number" step="any" min="0" value={formUnits} onChange={e => setFormUnits(e.target.value)} placeholder="10" />
                   </div>
                 )}
 
@@ -1434,21 +1581,22 @@ export default function AssetsPage() {
               <div className="space-y-3 p-3.5 rounded-xl border border-primary/20 bg-primary/5">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>{t('assets.growthType')}</Label>
-                    <select
-                      className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
-                      value={formGrowthType}
-                      onChange={e => setFormGrowthType(e.target.value)}
-                    >
-                      {GROWTH_TYPES.map(gt => (
-                        <option key={gt} value={gt}>{t(`assets.${gt}`)}</option>
-                      ))}
-                    </select>
+                    <Label htmlFor="asset-growth-type">{t('assets.growthType')}</Label>
+                    <Select value={formGrowthType} onValueChange={setFormGrowthType}>
+                      <SelectTrigger id="asset-growth-type" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GROWTH_TYPES.map(gt => (
+                          <SelectItem key={gt} value={gt}>{t(`assets.${gt}`)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>{t('assets.growthRate')}</Label>
+                    <Label htmlFor="asset-growth-rate">{t('assets.growthRate')}</Label>
                     <div className="relative">
-                      <Input type="number" step="any" value={formGrowthRate} onChange={e => setFormGrowthRate(e.target.value)} className={formGrowthType === 'percentage' ? 'pr-8' : ''} />
+                      <Input id="asset-growth-rate" type="number" step="any" value={formGrowthRate} onChange={e => setFormGrowthRate(e.target.value)} className={formGrowthType === 'percentage' ? 'pr-8' : ''} />
                       {formGrowthType === 'percentage' && (
                         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground pointer-events-none">%</span>
                       )}
@@ -1457,20 +1605,21 @@ export default function AssetsPage() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>{t('assets.growthFrequency')}</Label>
-                    <select
-                      className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
-                      value={formGrowthFrequency}
-                      onChange={e => setFormGrowthFrequency(e.target.value)}
-                    >
-                      {GROWTH_FREQUENCIES.map(gf => (
-                        <option key={gf} value={gf}>{t(`assets.${gf}`)}</option>
-                      ))}
-                    </select>
+                    <Label htmlFor="asset-growth-frequency">{t('assets.growthFrequency')}</Label>
+                    <Select value={formGrowthFrequency} onValueChange={setFormGrowthFrequency}>
+                      <SelectTrigger id="asset-growth-frequency" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {GROWTH_FREQUENCIES.map(gf => (
+                          <SelectItem key={gf} value={gf}>{t(`assets.${gf}`)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>{t('assets.growthStartDate')}</Label>
-                    <DatePickerInput value={formGrowthStartDate} onChange={setFormGrowthStartDate} />
+                    <Label htmlFor="asset-growth-start-date">{t('assets.growthStartDate')}</Label>
+                    <DatePickerInput id="asset-growth-start-date" value={formGrowthStartDate} onChange={setFormGrowthStartDate} />
                   </div>
                 </div>
               </div>
@@ -1481,13 +1630,13 @@ export default function AssetsPage() {
                 hide the total-price field. Manual assets keep both. */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{t('assets.purchaseDate')}</Label>
-                <DatePickerInput value={formPurchaseDate} onChange={setFormPurchaseDate} />
+                <Label htmlFor="asset-purchase-date">{t('assets.purchaseDate')}</Label>
+                <DatePickerInput id="asset-purchase-date" value={formPurchaseDate} onChange={setFormPurchaseDate} />
               </div>
               {formMethod !== 'market_price' && (
                 <div className="space-y-2">
-                  <Label>{t('assets.purchasePrice')}</Label>
-                  <Input type="number" step="0.01" value={formPurchasePrice} onChange={e => setFormPurchasePrice(e.target.value)} />
+                  <Label htmlFor="asset-purchase-price">{t('assets.purchasePrice')}</Label>
+                  <Input id="asset-purchase-price" type="number" step="0.01" value={formPurchasePrice} onChange={e => setFormPurchasePrice(e.target.value)} />
                 </div>
               )}
             </div>
@@ -1497,12 +1646,12 @@ export default function AssetsPage() {
             {formMethod !== 'market_price' && (
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{t('assets.sellDate')}</Label>
-                  <DatePickerInput value={formSellDate} onChange={setFormSellDate} />
+                  <Label htmlFor="asset-sell-date">{t('assets.sellDate')}</Label>
+                  <DatePickerInput id="asset-sell-date" value={formSellDate} onChange={setFormSellDate} />
                 </div>
                 <div className="space-y-2">
-                  <Label>{t('assets.sellPrice')}</Label>
-                  <Input type="number" step="0.01" value={formSellPrice} onChange={e => setFormSellPrice(e.target.value)} />
+                  <Label htmlFor="asset-sell-price">{t('assets.sellPrice')}</Label>
+                  <Input id="asset-sell-price" type="number" step="0.01" value={formSellPrice} onChange={e => setFormSellPrice(e.target.value)} />
                 </div>
               </div>
             )}
@@ -1510,8 +1659,9 @@ export default function AssetsPage() {
             {/* Current Value — manual only */}
             {!editingAsset && formMethod === 'manual' && (
               <div className="space-y-2">
-                <Label>{t('assets.currentValue')}</Label>
+                <Label htmlFor="asset-current-value">{t('assets.currentValue')}</Label>
                 <Input
+                  id="asset-current-value"
                   type="number"
                   step="any"
                   value={formCurrentValue}
@@ -1617,8 +1767,9 @@ export default function AssetsPage() {
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>{t('assets.walletName')}</Label>
+              <Label htmlFor="wallet-name">{t('assets.walletName')}</Label>
               <Input
+                id="wallet-name"
                 value={walletFormName}
                 onChange={e => setWalletFormName(e.target.value)}
                 placeholder={t('assets.walletNamePlaceholder')}
@@ -1632,8 +1783,9 @@ export default function AssetsPage() {
               )}
             </div>
             <div className="space-y-2">
-              <Label>{t('assets.walletColor')}</Label>
+              <Label htmlFor="wallet-color">{t('assets.walletColor')}</Label>
               <Input
+                id="wallet-color"
                 type="color"
                 value={walletFormColor}
                 onChange={e => setWalletFormColor(e.target.value)}
@@ -2032,6 +2184,16 @@ const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, 
   const [valueAmount, setValueAmount] = useState('')
   const [valueDate, setValueDate] = useState(localDateString)
 
+  // Shared by add/delete-value mutations below — both need every view that
+  // could show this asset's value to reflect the change immediately.
+  function refetchAssetValueViews() {
+    queryClient.refetchQueries({ queryKey: ['assets'] })
+    queryClient.refetchQueries({ queryKey: ['asset-values', assetId] })
+    queryClient.refetchQueries({ queryKey: ['asset-trend', assetId] })
+    queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
+    queryClient.refetchQueries({ queryKey: ['dashboard'] })
+  }
+
   const { data: values, isLoading: valuesLoading } = useQuery({
     queryKey: ['asset-values', assetId],
     queryFn: () => assets.values(assetId),
@@ -2101,11 +2263,7 @@ const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, 
     mutationFn: ({ assetId: id, ...data }: { assetId: string; amount: number; date: string }) =>
       assets.addValue(id, data),
     onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['assets'] })
-      queryClient.refetchQueries({ queryKey: ['asset-values', assetId] })
-      queryClient.refetchQueries({ queryKey: ['asset-trend', assetId] })
-      queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
-      queryClient.refetchQueries({ queryKey: ['dashboard'] })
+      refetchAssetValueViews()
       setValueAmount('')
       toast.success(t('assets.valueAdded'))
     },
@@ -2115,11 +2273,7 @@ const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, 
   const deleteValueMutation = useMutation({
     mutationFn: (valueId: string) => assets.deleteValue(valueId),
     onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['assets'] })
-      queryClient.refetchQueries({ queryKey: ['asset-values', assetId] })
-      queryClient.refetchQueries({ queryKey: ['asset-trend', assetId] })
-      queryClient.refetchQueries({ queryKey: ['portfolio-trend'] })
-      queryClient.refetchQueries({ queryKey: ['dashboard'] })
+      refetchAssetValueViews()
       toast.success(t('assets.valueDeleted'))
     },
     onError: (e) => toast.error(assetErrorMessage(e, t('common.error'))),
@@ -2211,8 +2365,9 @@ const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, 
       {/* Add Value Form — only for manual assets */}
       {!chartOnly && valuationMethod === 'manual' && canWrite && <div className="flex items-end gap-2">
         <div className="flex-1">
-          <Label className="text-[11px] text-muted-foreground">{t('assets.amount')}</Label>
+          <Label htmlFor={`asset-value-amount-${assetId}`} className="text-[11px] text-muted-foreground">{t('assets.amount')}</Label>
           <Input
+            id={`asset-value-amount-${assetId}`}
             type="number"
             step="any"
             value={valueAmount}
@@ -2222,8 +2377,8 @@ const AssetDetail = memo(function AssetDetail({ assetId, currency, locale: loc, 
           />
         </div>
         <div className="w-36">
-          <Label className="text-[11px] text-muted-foreground">{t('assets.date')}</Label>
-          <DatePickerInput value={valueDate} onChange={setValueDate} />
+          <Label htmlFor={`asset-value-date-${assetId}`} className="text-[11px] text-muted-foreground">{t('assets.date')}</Label>
+          <DatePickerInput id={`asset-value-date-${assetId}`} value={valueDate} onChange={setValueDate} />
         </div>
         <Button
           size="sm"
@@ -2445,9 +2600,11 @@ function AssetTransactionsTab({
   const isNewTicker = !editingTx && formHolding === '__new__'
   // Warn before a sell that exceeds the held quantity (no shorting). Only on a
   // fresh sell into an existing holding; edits are validated server-side.
-  const selectedHeldUnits = marketHoldings.find((h) => h.id === formHolding)?.units ?? 0
+  const selectedHolding = marketHoldings.find((h) => h.id === formHolding)
+  const selectedHeldUnits = selectedHolding?.units ?? 0
+  const selectedCurrency = (editingTx ? holdings.find((h) => h.id === editingTx.asset_id)?.currency : selectedHolding?.currency) ?? 'USD'
   const oversell =
-    !editingTx && !isNewTicker && formKind === 'sell' && !!formQuantity && parseFloat(formQuantity) > selectedHeldUnits
+    !editingTx && !isNewTicker && isOversell(formKind, formQuantity, selectedHeldUnits)
   const canSave =
     !!formQuantity &&
     parseFloat(formQuantity) > 0 &&
@@ -2578,47 +2735,53 @@ function AssetTransactionsTab({
             {/* Holding picker — only when adding (kind is locked on edit too) */}
             {!editingTx && (
               <div className="space-y-2">
-                <Label>{t('assets.holding')}</Label>
-                <select
-                  className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
+                <Label htmlFor="tx-holding">{t('assets.holding')}</Label>
+                <Select
                   value={formHolding}
-                  onChange={(e) => {
-                    setFormHolding(e.target.value)
-                    if (e.target.value === '__new__') setFormKind('buy')
+                  onValueChange={(v) => {
+                    setFormHolding(v)
+                    if (v === '__new__') setFormKind('buy')
                   }}
                 >
-                  <option value="__new__">{t('assets.newTicker')}</option>
-                  {marketHoldings.map((h) => (
-                    <option key={h.id} value={h.id}>
-                      {h.ticker || h.name}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger id="tx-holding" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__new__">{t('assets.newTicker')}</SelectItem>
+                    {marketHoldings.map((h) => (
+                      <SelectItem key={h.id} value={h.id}>
+                        {h.ticker || h.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
 
             {isNewTicker && (
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{t('assets.ticker')}</Label>
+                  <Label htmlFor="tx-ticker">{t('assets.ticker')}</Label>
                   <Input
+                    id="tx-ticker"
                     value={formTicker}
                     onChange={(e) => setFormTicker(e.target.value)}
                     placeholder={t('assets.tickerPlaceholder')}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>{t('assets.wallet')}</Label>
-                  <select
-                    className="bg-card border border-border focus:outline-none focus:ring-2 focus:ring-primary px-3 py-2 rounded-lg text-foreground text-sm w-full"
-                    value={formGroupId}
-                    onChange={(e) => setFormGroupId(e.target.value)}
-                  >
-                    <option value="">{t('assets.noWallet')}</option>
-                    {wallets.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
-                    ))}
-                  </select>
+                  <Label htmlFor="tx-wallet">{t('assets.wallet')}</Label>
+                  <Select value={formGroupId || '__none__'} onValueChange={(v) => setFormGroupId(v === '__none__' ? '' : v)}>
+                    <SelectTrigger id="tx-wallet" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">{t('assets.noWallet')}</SelectItem>
+                      {wallets.map((w) => (
+                        <SelectItem key={w.id} value={w.id}>{w.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             )}
@@ -2644,23 +2807,23 @@ function AssetTransactionsTab({
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{t('assets.quantity')}</Label>
-                <Input type="number" step="any" min="0" value={formQuantity} onChange={(e) => setFormQuantity(e.target.value)} />
+                <Label htmlFor="tx-quantity">{t('assets.quantity')}</Label>
+                <Input id="tx-quantity" type="number" step="any" min="0" value={formQuantity} onChange={(e) => setFormQuantity(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label>{t('assets.unitPrice')}</Label>
-                <Input type="number" step="any" min="0" value={formPrice} onChange={(e) => setFormPrice(e.target.value)} />
+                <Label htmlFor="tx-unit-price">{t('assets.unitPrice')}</Label>
+                <Input id="tx-unit-price" type="number" step="any" min="0" value={formPrice} onChange={(e) => setFormPrice(e.target.value)} />
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{t('assets.fee')}</Label>
-                <Input type="number" step="any" min="0" value={formFee} onChange={(e) => setFormFee(e.target.value)} placeholder="0" />
+                <Label htmlFor="tx-fee">{t('assets.fee')}</Label>
+                <Input id="tx-fee" type="number" step="any" min="0" value={formFee} onChange={(e) => setFormFee(e.target.value)} placeholder="0" />
               </div>
               <div className="space-y-2">
-                <Label>{t('assets.date')}</Label>
-                <DatePickerInput value={formDate} onChange={setFormDate} />
+                <Label htmlFor="tx-date">{t('assets.date')}</Label>
+                <DatePickerInput id="tx-date" value={formDate} onChange={setFormDate} />
               </div>
             </div>
 
@@ -2670,18 +2833,7 @@ function AssetTransactionsTab({
                 {t('assets.oversellWarning', { available: selectedHeldUnits })}
               </p>
             )}
-            {formQuantity && formPrice && parseFloat(formQuantity) > 0 && (
-              <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30">
-                <span className="text-xs font-medium text-muted-foreground">{t('assets.txTotal')}</span>
-                <span className="text-sm font-bold tabular-nums text-foreground">
-                  {formatCurrency(
-                    parseFloat(formQuantity) * parseFloat(formPrice) + (formFee ? parseFloat(formFee) : 0) * (formKind === 'buy' ? 1 : -1),
-                    'USD',
-                    locale,
-                  )}
-                </span>
-              </div>
-            )}
+            <TxTotalPreview quantity={formQuantity} price={formPrice} fee={formFee} kind={formKind} currency={selectedCurrency} locale={locale} />
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>{t('common.cancel')}</Button>
@@ -2853,7 +3005,7 @@ function AddHoldingTransactionDialog({
 
   const cur = holding?.currency ?? 'USD'
   const heldUnits = holding?.units ?? 0
-  const oversell = kind === 'sell' && !!quantity && parseFloat(quantity) > heldUnits
+  const oversell = isOversell(kind, quantity, heldUnits)
   const canSave = !!quantity && parseFloat(quantity) > 0 && !!price && !oversell && !saveMutation.isPending
 
   return (
@@ -2882,22 +3034,22 @@ function AddHoldingTransactionDialog({
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{t('assets.quantity')}</Label>
-              <Input type="number" step="any" min="0" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+              <Label htmlFor="htx-quantity">{t('assets.quantity')}</Label>
+              <Input id="htx-quantity" type="number" step="any" min="0" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
             </div>
             <div className="space-y-2">
-              <Label>{t('assets.unitPrice')}</Label>
-              <Input type="number" step="any" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
+              <Label htmlFor="htx-unit-price">{t('assets.unitPrice')}</Label>
+              <Input id="htx-unit-price" type="number" step="any" min="0" value={price} onChange={(e) => setPrice(e.target.value)} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>{t('assets.fee')}</Label>
-              <Input type="number" step="any" min="0" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" />
+              <Label htmlFor="htx-fee">{t('assets.fee')}</Label>
+              <Input id="htx-fee" type="number" step="any" min="0" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" />
             </div>
             <div className="space-y-2">
-              <Label>{t('assets.date')}</Label>
-              <DatePickerInput value={date} onChange={setDate} />
+              <Label htmlFor="htx-date">{t('assets.date')}</Label>
+              <DatePickerInput id="htx-date" value={date} onChange={setDate} />
             </div>
           </div>
           {oversell && (
@@ -2906,14 +3058,7 @@ function AddHoldingTransactionDialog({
               {t('assets.oversellWarning', { available: heldUnits })}
             </p>
           )}
-          {quantity && price && parseFloat(quantity) > 0 && (
-            <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30">
-              <span className="text-xs font-medium text-muted-foreground">{t('assets.txTotal')}</span>
-              <span className="text-sm font-bold tabular-nums text-foreground">
-                {formatCurrency(parseFloat(quantity) * parseFloat(price) + (fee ? parseFloat(fee) : 0) * (kind === 'buy' ? 1 : -1), cur, locale)}
-              </span>
-            </div>
-          )}
+          <TxTotalPreview quantity={quantity} price={price} fee={fee} kind={kind} currency={cur} locale={locale} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>{t('common.cancel')}</Button>
