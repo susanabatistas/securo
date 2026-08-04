@@ -45,11 +45,14 @@ import {
 import {
   AreaChart,
   Area,
+  LineChart as RechartsLineChart,
+  Line,
   XAxis,
   YAxis,
   Tooltip as RechartsTooltip,
   ResponsiveContainer,
   CartesianGrid,
+  ReferenceLine,
 } from 'recharts'
 import { PageHeader } from '@/components/page-header'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
@@ -1324,6 +1327,26 @@ export default function AssetsPage() {
     [assetsList],
   )
 
+  // Total portfolio return (today), in the user's primary currency. Derives
+  // each asset's invested amount from current_value_primary - gain_loss_primary
+  // rather than needing a separate "invested_primary" field — those two are
+  // already stamped by the API (assets.py list_assets) for any asset with a
+  // known cost basis, same-currency assets falling back to their native
+  // amounts since primary equals native there.
+  const { totalInvestedPrimary, totalGainPrimary } = useMemo(() => {
+    let invested = 0
+    let gain = 0
+    for (const a of activeAssets) {
+      if (a.purchase_price == null) continue
+      const g = a.gain_loss_primary ?? a.gain_loss ?? 0
+      const cv = a.current_value_primary ?? a.current_value ?? 0
+      invested += cv - g
+      gain += g
+    }
+    return { totalInvestedPrimary: invested, totalGainPrimary: gain }
+  }, [activeAssets])
+  const portfolioReturnPct = totalInvestedPrimary > 0 ? (totalGainPrimary / totalInvestedPrimary) * 100 : null
+
   // Publish a snapshot of what's on the Assets page so the global chat
   // (⌘J) can answer "what does this chart mean / what are these
   // wallets?" without needing the user to spell it out.
@@ -1724,6 +1747,8 @@ export default function AssetsPage() {
             mask={mask}
             focusedWalletId={chartFocusWalletId}
             onWalletClick={onWalletClick}
+            returnPct={portfolioReturnPct}
+            returnAmount={totalGainPrimary}
           />
         )
       )}
@@ -1964,7 +1989,7 @@ const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6',
 // though its props (data/wallets are already useMemo'd upstream) hadn't
 // changed. Props are all primitives/memoized values, so shallow-equal
 // bailout is safe and effective.
-const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick }: {
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
@@ -1975,6 +2000,10 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
   // (only meaningful in "By Wallet" mode — each entry there is one wallet).
   focusedWalletId: string | null
   onWalletClick: (walletId: string) => void
+  // Total unrealized gain/loss vs. cost basis, today, across all active
+  // assets with a known purchase price — null when no asset has one.
+  returnPct: number | null
+  returnAmount: number
 }) {
   const { t } = useTranslation()
   // Default to wallet mode: with many synced CDBs the asset view turns
@@ -1984,6 +2013,8 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
   // cumulative total.
   const [mode, setMode] = useState<'wallet' | 'asset'>('wallet')
   const [drawMode, setDrawMode] = useState<'stacked' | 'lines'>('stacked')
+  const [viewMode, setViewMode] = useState<'value' | 'return'>('value')
+  const [period, setPeriod] = useState<'3M' | '6M' | '1Y' | 'ALL'>('ALL')
   const isStacked = drawMode === 'stacked'
 
   const formatCompact = (v: number) => {
@@ -1992,6 +2023,37 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
     if (abs >= 1_000) return `${(v / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}k`
     return v.toLocaleString(loc, { maximumFractionDigits: 0 })
   }
+
+  // Zoom the chart to a trailing window ending at the last data point (not
+  // "today") so a workspace with no recent activity doesn't look truncated.
+  // The header Total/Return stat is intentionally NOT re-scoped by this —
+  // it always reflects the live portfolio, only the chart below zooms.
+  const periodTrend = useMemo(() => {
+    if (period === 'ALL' || data.trend.length === 0) return data.trend
+    const months = period === '3M' ? 3 : period === '6M' ? 6 : 12
+    const lastDate = new Date((data.trend[data.trend.length - 1].date as string) + 'T00:00:00')
+    const cutoff = new Date(lastDate)
+    cutoff.setMonth(cutoff.getMonth() - months)
+    const cutoffStr = cutoff.toISOString().slice(0, 10)
+    return data.trend.filter(r => (r.date as string) >= cutoffStr)
+  }, [data.trend, period])
+
+  // Portfolio return % over time — (value - invested) / invested per date.
+  // A single aggregate line (not broken out by wallet/asset): with
+  // contributions arriving at different times, per-wallet "return" would mix
+  // new capital with actual gains in a way that's more confusing than useful.
+  const returnTrend = useMemo(() => {
+    return periodTrend.map(row => {
+      const total = Number(row._total) || 0
+      const invested = Number(row._invested) || 0
+      return {
+        date: row.date as string,
+        return_pct: invested > 0 ? ((total - invested) / invested) * 100 : null,
+        total,
+        invested,
+      }
+    })
+  }, [periodTrend])
 
   // Compute the series list and rewrite trend rows based on the selected
   // mode. Wallet mode rolls all assets sharing a group_id into a single
@@ -2005,7 +2067,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
         color: PORTFOLIO_COLORS[i % PORTFOLIO_COLORS.length],
         sourceAssetIds: [a.id],
       }))
-      return { series: s, displayTrend: data.trend }
+      return { series: s, displayTrend: periodTrend }
     }
 
     const walletById = new Map<string, AssetGroup>()
@@ -2052,7 +2114,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
       })
     }
 
-    const newTrend = data.trend.map(row => {
+    const newTrend = periodTrend.map(row => {
       const newRow: Record<string, unknown> = { date: row.date, _total: row._total }
       for (const entry of s) {
         let sum = 0
@@ -2065,7 +2127,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
     })
 
     return { series: s, displayTrend: newTrend }
-  }, [mode, data, wallets, t])
+  }, [mode, data, wallets, t, periodTrend])
   const sortedSeries = useMemo(() => {
     const lastRow = displayTrend[displayTrend.length - 1]
     if (!lastRow) return series
@@ -2082,41 +2144,76 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-foreground">{t('assets.portfolioValue')}</h3>
           <div className="flex flex-wrap items-center gap-2">
-            <div role="group" aria-label={t('assets.chartGroupMode')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+            <div role="group" aria-label={t('assets.chartValueMode')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
               <button
                 type="button"
-                aria-pressed={mode === 'wallet'}
-                onClick={() => setMode('wallet')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${mode === 'wallet' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                aria-pressed={viewMode === 'value'}
+                onClick={() => setViewMode('value')}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${viewMode === 'value' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
               >
-                {t('assets.chartByWallet')}
+                {t('assets.chartValue')}
               </button>
               <button
                 type="button"
-                aria-pressed={mode === 'asset'}
-                onClick={() => setMode('asset')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${mode === 'asset' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                aria-pressed={viewMode === 'return'}
+                onClick={() => setViewMode('return')}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${viewMode === 'return' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
               >
-                {t('assets.chartByAsset')}
+                {t('assets.chartReturn')}
               </button>
             </div>
-            <div role="group" aria-label={t('assets.chartDrawMode')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
-              <button
-                type="button"
-                aria-pressed={drawMode === 'stacked'}
-                onClick={() => setDrawMode('stacked')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${drawMode === 'stacked' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                {t('assets.chartStacked')}
-              </button>
-              <button
-                type="button"
-                aria-pressed={drawMode === 'lines'}
-                onClick={() => setDrawMode('lines')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${drawMode === 'lines' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                {t('assets.chartLines')}
-              </button>
+            {viewMode === 'value' && (
+              <>
+                <div role="group" aria-label={t('assets.chartGroupMode')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+                  <button
+                    type="button"
+                    aria-pressed={mode === 'wallet'}
+                    onClick={() => setMode('wallet')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${mode === 'wallet' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    {t('assets.chartByWallet')}
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={mode === 'asset'}
+                    onClick={() => setMode('asset')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${mode === 'asset' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    {t('assets.chartByAsset')}
+                  </button>
+                </div>
+                <div role="group" aria-label={t('assets.chartDrawMode')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+                  <button
+                    type="button"
+                    aria-pressed={drawMode === 'stacked'}
+                    onClick={() => setDrawMode('stacked')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${drawMode === 'stacked' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    {t('assets.chartStacked')}
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={drawMode === 'lines'}
+                    onClick={() => setDrawMode('lines')}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${drawMode === 'lines' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    {t('assets.chartLines')}
+                  </button>
+                </div>
+              </>
+            )}
+            <div role="group" aria-label={t('assets.chartPeriod')} className="inline-flex items-center rounded-lg border border-border p-0.5 bg-muted/40">
+              {(['3M', '6M', '1Y', 'ALL'] as const).map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  aria-pressed={period === p}
+                  onClick={() => setPeriod(p)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${period === p ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                >
+                  {p === 'ALL' ? t('assets.periodAll') : p}
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -2125,8 +2222,14 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           <p className="text-lg font-bold tabular-nums text-foreground">
             {mask(formatCurrency(data.total, currency, loc))}
           </p>
+          {returnPct != null && (
+            <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
+              {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}% ({mask(formatCurrency(returnAmount, currency, loc))})
+            </p>
+          )}
         </div>
       </div>
+      {viewMode === 'value' ? (
       <div className="h-56">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={displayTrend} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
@@ -2208,9 +2311,68 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           </AreaChart>
         </ResponsiveContainer>
       </div>
+      ) : (
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <RechartsLineChart data={returnTrend} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" strokeOpacity={0.5} />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v: string) => new Date(v + 'T00:00:00').toLocaleDateString(dateLoc, { month: 'short', year: '2-digit' })}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
+              axisLine={false}
+              tickLine={false}
+              width={48}
+              tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+            />
+            <ReferenceLine y={0} stroke="var(--border)" />
+            <RechartsTooltip
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null
+                const row = returnTrend.find(r => r.date === label)
+                if (!row || row.return_pct == null) return null
+                return (
+                  <div style={{ background: 'var(--card)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: '0.75rem', fontSize: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', padding: '10px 12px' }}>
+                    <p style={{ fontWeight: 600, marginBottom: 6 }}>
+                      {new Date(label + 'T00:00:00').toLocaleDateString(dateLoc, { day: 'numeric', month: 'long', year: 'numeric' })}
+                    </p>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 2 }}>
+                      <span>{t('assets.chartReturn')}</span>
+                      <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: row.return_pct >= 0 ? 'var(--chart-positive, #10b981)' : 'var(--chart-negative, #f43f5e)' }}>
+                        {row.return_pct >= 0 ? '+' : ''}{row.return_pct.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
+                      <span>{t('assets.total')}</span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{mask(formatCurrency(row.total, currency, loc))}</span>
+                    </div>
+                  </div>
+                )
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="return_pct"
+              stroke="var(--primary)"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
+              connectNulls
+            />
+          </RechartsLineChart>
+        </ResponsiveContainer>
+      </div>
+      )}
       {/* Legend — in wallet mode, each entry is clickable to scope the
           chart above to just that wallet (issue: "click a wallet in the
-          legend and the graph shows only that wallet"). */}
+          legend and the graph shows only that wallet"). Only meaningful
+          for the Value view — Return is a single aggregate line. */}
+      {viewMode === 'value' && (
       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 px-1">
         {sortedSeries.map(s => {
           const walletId = mode === 'wallet' && s.key.startsWith('w_') ? s.key.slice(2) : null
@@ -2238,6 +2400,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           )
         })}
       </div>
+      )}
     </div>
   )
 })

@@ -29,6 +29,7 @@ from app.schemas.asset import (
     AssetTransactionUpdate,
 )
 from app.services import asset_service
+from app.services.fx_rate_service import stamp_primary_amount
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,22 @@ async def recompute_and_cache(session: AsyncSession, asset: Asset) -> None:
     # Keep today's chart point in step with the new quantity.
     if asset.valuation_method == "market_price" and asset.last_price is not None:
         await asset_service._apply_price_to_asset(session, asset, Decimal(str(asset.last_price)))
+
+    # Re-stamp purchase_price_primary — unlike update_asset (which does this on
+    # any purchase_price edit), a ledger-driven change to the cost basis above
+    # otherwise leaves this field stale at whatever it was when the asset was
+    # first created, silently drifting from the real cost basis after every
+    # subsequent buy/sell.
+    if asset.purchase_price is not None:
+        await stamp_primary_amount(
+            session, asset.user_id, asset,
+            amount_field="purchase_price",
+            primary_field="purchase_price_primary",
+            rate_field="_no_rate",
+            date_field="purchase_date",
+        )
+    else:
+        asset.purchase_price_primary = None
 
 
 def _tx_to_read(tx: AssetTransaction, asset: Optional[Asset] = None) -> AssetTransactionRead:

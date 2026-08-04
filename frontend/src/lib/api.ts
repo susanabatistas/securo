@@ -1042,7 +1042,7 @@ export const assets = {
   deleteValue: async (valueId: string): Promise<void> => {
     await api.delete(`/assets/values/${valueId}`)
   },
-  portfolioTrend: async (): Promise<{ assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }> => {
+  portfolioTrend: async (): Promise<{ assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number; invested_total: number }> => {
     const { data } = await api.get('/assets/portfolio-trend')
     return data
   },

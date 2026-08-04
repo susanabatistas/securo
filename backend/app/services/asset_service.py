@@ -267,6 +267,45 @@ def build_market_value_series(
     return out
 
 
+def build_cost_basis_series(
+    asset: Asset,
+    txs: list[tuple[date, str, Decimal, Decimal, Decimal]],
+) -> list[tuple[date, float]]:
+    """Invested capital (cost basis) over time for one asset, for the
+    portfolio return chart.
+
+    Ledger-backed (market_price): replays buys/sells in date order using the
+    same weighted-average method as
+    asset_transaction_service._recompute — a sell realizes (price - avg) * qty
+    and lowers the cost basis proportionally, leaving the per-unit average
+    unchanged — emitting the running cost basis at each transaction date so a
+    holding built up over several buys shows its capital growing in steps.
+
+    Manual/growth_rule (no ledger): cost basis is simply `purchase_price`,
+    constant from `purchase_date` onward — a single anchor point, since these
+    assets have no transaction history to replay. Fill-forward in the caller
+    carries it flat from there.
+    """
+    if asset.valuation_method == "market_price" and txs:
+        out: list[tuple[date, float]] = []
+        cost = Decimal("0")
+        qty = Decimal("0")
+        for d, kind, q, p, fee in sorted(txs, key=lambda t: t[0]):
+            if kind == "buy":
+                cost += q * p + fee
+                qty += q
+            else:
+                avg = (cost / qty) if qty > 0 else Decimal("0")
+                sell_qty = q if q <= qty else qty
+                cost -= avg * sell_qty
+                qty -= sell_qty
+            out.append((d, float(cost)))
+        return out
+    if asset.purchase_price is not None and asset.purchase_date is not None:
+        return [(asset.purchase_date, float(asset.purchase_price))]
+    return []
+
+
 async def _load_asset_native_values(
     session: AsyncSession,
     assets: list[Asset],
@@ -918,7 +957,7 @@ async def get_portfolio_trend(
     active_assets = list(result.scalars().all())
 
     if not active_assets:
-        return {"assets": [], "trend": [], "total": 0.0}
+        return {"assets": [], "trend": [], "total": 0.0, "invested_total": 0.0}
 
     # Get user's primary currency for conversion
     user = await session.get(User, user_id) if user_id is not None else None
@@ -926,10 +965,28 @@ async def get_portfolio_trend(
 
     values_map = await _load_asset_native_values(session, active_assets)
 
+    # Bulk-load transactions for the cost-basis (invested capital) series —
+    # one query for every market_price asset, mirroring how
+    # _load_asset_native_values bulk-loads them for the value series.
+    market_assets = [a for a in active_assets if a.valuation_method == "market_price"]
+    txs_by_aid: dict[str, list[tuple[date, str, Decimal, Decimal, Decimal]]] = {}
+    if market_assets:
+        tx_result = await session.execute(
+            select(
+                AssetTransaction.asset_id, AssetTransaction.date, AssetTransaction.kind,
+                AssetTransaction.quantity, AssetTransaction.price, AssetTransaction.fee,
+            ).where(AssetTransaction.asset_id.in_([a.id for a in market_assets]))
+        )
+        for aid_, d, kind, qty, price, fee in tx_result.all():
+            txs_by_aid.setdefault(str(aid_), []).append(
+                (d, kind, Decimal(str(qty)), Decimal(str(price)), Decimal(str(fee or 0)))
+            )
+
     asset_meta = []
     asset_currency: dict[str, str] = {}
     sell_date_by_aid: dict[str, date] = {}
     all_dates: set[date] = set()
+    invested_map: dict[str, list[tuple[date, float]]] = {}
 
     for asset in active_assets:
         aid = str(asset.id)
@@ -940,6 +997,7 @@ async def get_portfolio_trend(
             "group_id": str(asset.group_id) if asset.group_id else None,
         })
         asset_currency[aid] = asset.currency
+        invested_map[aid] = build_cost_basis_series(asset, txs_by_aid.get(aid, []))
 
         vals = values_map[aid]
 
@@ -958,7 +1016,7 @@ async def get_portfolio_trend(
             all_dates.add(d)
 
     if not all_dates:
-        return {"assets": asset_meta, "trend": [], "total": 0.0}
+        return {"assets": asset_meta, "trend": [], "total": 0.0, "invested_total": 0.0}
 
     sorted_dates = sorted(all_dates)
 
@@ -969,6 +1027,14 @@ async def get_portfolio_trend(
         value_lookup[aid] = dict(values_map[aid])
         if values_map[aid]:
             first_date[aid] = values_map[aid][0][0]
+
+    # Same shape for the cost-basis series, used to derive the return %.
+    invested_lookup: dict[str, dict[date, float]] = {}
+    invested_first_date: dict[str, date] = {}
+    for aid in [a["id"] for a in asset_meta]:
+        invested_lookup[aid] = dict(invested_map[aid])
+        if invested_map[aid]:
+            invested_first_date[aid] = invested_map[aid][0][0]
 
     # Bulk-load every FX rate we might need for this trend once, up front —
     # the old code called `convert()` (up to 2 rate queries, and on a missing
@@ -985,46 +1051,71 @@ async def get_portfolio_trend(
     # get_asset_values_at(as_of_date=d).
     trend = []
     last_known: dict[str, float] = {}  # native currency amounts
+    last_known_invested: dict[str, float] = {}
     for aid in [a["id"] for a in asset_meta]:
         last_known[aid] = 0.0
+        last_known_invested[aid] = 0.0
 
     for d in sorted_dates:
         row: dict[str, object] = {"date": d.isoformat()}
         date_total = 0.0
+        date_invested = 0.0
         for aid in [a["id"] for a in asset_meta]:
             if d in value_lookup[aid]:
                 last_known[aid] = value_lookup[aid][d]
+            if d in invested_lookup[aid]:
+                last_known_invested[aid] = invested_lookup[aid][d]
             # Use 0 before asset exists (stacking needs numeric values)
             if aid in first_date and d >= first_date[aid]:
                 native = last_known[aid]
             else:
                 native = 0.0
+            native_invested = (
+                last_known_invested[aid]
+                if aid in invested_first_date and d >= invested_first_date[aid]
+                else 0.0
+            )
             # After sell_date, the asset has been liquidated — drop to 0 so
             # it stops contributing to the portfolio total going forward.
             if aid in sell_date_by_aid and d > sell_date_by_aid[aid]:
                 native = 0.0
                 last_known[aid] = 0.0
+                native_invested = 0.0
+                last_known_invested[aid] = 0.0
 
-            # Convert native amount to primary currency at this display date
+            # Convert native amount to primary currency at this display date.
+            # Invested reuses the same rate — it's the same (currency, date)
+            # pair, so no need to resolve it twice per asset per date.
             currency = asset_currency[aid]
-            if native != 0.0 and currency != primary_currency:
+            if currency != primary_currency and (native != 0.0 or native_invested != 0.0):
                 rate = _cross_rate(rate_series, currency, primary_currency, d)
                 # Same fallback as fx_rate_service.get_rate: no resolvable
                 # rate → treat as 1:1 rather than dropping the value.
-                val = round(native * float(rate), 2) if rate is not None else round(native, 2)
+                factor = float(rate) if rate is not None else 1.0
+                val = round(native * factor, 2)
+                invested_val = round(native_invested * factor, 2)
             else:
                 val = round(native, 2)
+                invested_val = round(native_invested, 2)
 
             row[aid] = val
             date_total += val
+            date_invested += invested_val
         row["_total"] = round(date_total, 2)
+        row["_invested"] = round(date_invested, 2)
         trend.append(row)
 
     # The header total matches the last row's _total — both use the same
     # per-display-date conversion so no second conversion is needed.
     total = trend[-1]["_total"] if trend else 0.0
+    invested_total = trend[-1]["_invested"] if trend else 0.0
 
-    return {"assets": asset_meta, "trend": trend, "total": round(total, 2)}
+    return {
+        "assets": asset_meta,
+        "trend": trend,
+        "total": round(total, 2),
+        "invested_total": round(invested_total, 2),
+    }
 
 
 async def get_asset_values_at(
