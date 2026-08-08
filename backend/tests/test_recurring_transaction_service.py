@@ -306,6 +306,35 @@ def test_get_occurrences_in_range_monthly_day_29_does_not_drift():
     ]
 
 
+def test_get_occurrences_in_range_quarterly():
+    occurrences = get_occurrences_in_range(
+        start=date(2026, 1, 31),
+        frequency="quarterly",
+        end_date=None,
+        range_start=date(2026, 1, 1),
+        range_end=date(2027, 2, 1),
+        intended_day=31,
+    )
+    assert occurrences == [
+        date(2026, 1, 31),
+        date(2026, 4, 30),
+        date(2026, 7, 31),
+        date(2026, 10, 31),
+        date(2027, 1, 31),
+    ]
+
+
+def test_get_occurrences_in_range_quarterly_respects_end_date():
+    occurrences = get_occurrences_in_range(
+        start=date(2026, 1, 15),
+        frequency="quarterly",
+        end_date=date(2026, 7, 1),
+        range_start=date(2026, 1, 1),
+        range_end=date(2027, 1, 1),
+    )
+    assert occurrences == [date(2026, 1, 15), date(2026, 4, 15)]
+
+
 # ---------------------------------------------------------------------------
 # generate_pending
 # ---------------------------------------------------------------------------
@@ -343,6 +372,48 @@ async def test_generate_pending(session: AsyncSession, test_user, test_workspace
     # next_occurrence should be advanced past cutoff
     await session.refresh(rec)
     assert rec.next_occurrence == date(2025, 4, 1)
+
+
+@pytest.mark.asyncio
+async def test_generate_pending_quarterly_respects_end_date(
+    session: AsyncSession, test_user, test_workspace, test_account_for_recurring
+):
+    rec = await create_recurring_transaction(
+        session,
+        test_workspace.id,
+        test_user.id,
+        RecurringTransactionCreate(
+            description="Quarterly Insurance",
+            amount=Decimal("300"),
+            type="debit",
+            frequency="quarterly",
+            day_of_month=30,
+            start_date=date(2023, 11, 30),
+            end_date=date(2024, 5, 30),
+            account_id=test_account_for_recurring.id,
+        ),
+    )
+
+    count = await generate_pending(session, test_user.id, up_to=date(2024, 12, 31))
+    assert count == 3
+
+    result = await session.execute(
+        select(Transaction)
+        .where(
+            Transaction.recurring_transaction_id == rec.id,
+            Transaction.source == "recurring",
+        )
+        .order_by(Transaction.date)
+    )
+    assert [transaction.date for transaction in result.scalars()] == [
+        date(2023, 11, 30),
+        date(2024, 2, 29),
+        date(2024, 5, 30),
+    ]
+
+    await session.refresh(rec)
+    assert rec.next_occurrence == date(2024, 8, 30)
+    assert rec.is_active is False
 
 
 @pytest.mark.asyncio
