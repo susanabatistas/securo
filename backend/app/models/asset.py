@@ -85,6 +85,13 @@ class Asset(Base):
     # the type icon". Frontend swaps to the type icon on <img> load error.
     logo_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
+    # Manual override of the automatic stock checklist verdict (stock assets
+    # only). NULL means "use the computed result, if any".
+    stock_checklist_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # aprovado, rever, a_evitar
+    # Manual override of the IR estimator's tax bucket. NULL means "use the
+    # default derived from type+ticker" or "not applicable" for non-securities.
+    tax_category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # renda_fixa, fii, acoes_etfs_cripto
+
     values: Mapped[list["AssetValue"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     transactions: Mapped[list["AssetTransaction"]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"

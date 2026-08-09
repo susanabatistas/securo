@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import date as _date
 from decimal import Decimal
 from typing import Optional
 
@@ -35,6 +37,37 @@ from app.providers.favicon import favicon_url_for
 from app.schemas.asset import MarketSymbolMatch, MarketSymbolQuote
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StockFundamentals:
+    """Best-effort fundamentals for the stock checklist (issue: investment
+    analytics port). Every numeric field is independently optional — yfinance's
+    `.info`/`income_stmt`/`balance_sheet` are frequently incomplete for
+    non-US tickers, so a missing figure here means "not evaluated", not zero.
+
+    `sector`/`industry` are display-only, never a pass/fail criterion.
+    """
+
+    sector: Optional[str]
+    industry: Optional[str]
+    roe_avg_pct: Optional[float]
+    revenue_cagr_pct: Optional[float]
+    profit_cagr_pct: Optional[float]
+    net_debt_to_ebitda: Optional[float]
+    years_available: int
+
+
+@dataclass(frozen=True)
+class DividendEvent:
+    """A single historical dividend/JCP/rendimento payout, from yfinance's
+    `Ticker.dividends` — confirmed reliable for both US and BR (.SA)
+    tickers, including FIIs. yfinance doesn't distinguish dividendo from
+    JCP (both come back as one "Dividends" action); the caller applies its
+    own default (e.g. "rendimento" for FIIs, "dividendo" otherwise)."""
+
+    date: _date
+    amount: float
 
 
 # Yahoo Finance occasionally reports prices in minor units (pence, cents).
@@ -223,6 +256,30 @@ class YFinanceProvider(MarketPriceProvider):
             logo_url=_logo_url_for(raw.get("website")),
         )
 
+    async def get_dividend_history(self, symbol: str, since: Optional[_date] = None) -> list[DividendEvent]:
+        """Historical dividend/JCP/rendimento payouts for `symbol`, from
+        `Ticker.dividends`. Optionally filtered to events on/after `since`
+        (e.g. an asset's purchase_date — no point suggesting a payout from
+        before the position was opened). Returns [] on any upstream failure
+        rather than raising — this backs an optional "fetch history" UI
+        action, not a critical path."""
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return []
+        return await asyncio.to_thread(self._dividend_history_sync, sym, since)
+
+    async def get_stock_fundamentals(self, symbol: str, years: int = 5) -> Optional[StockFundamentals]:
+        """Best-effort fundamentals for the stock checklist.
+
+        Never raises for missing/malformed upstream data — individual
+        figures come back None so the checklist can mark just that
+        criterion "not evaluated" instead of failing the whole result.
+        """
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            return None
+        return await asyncio.to_thread(self._stock_fundamentals_sync, sym, years)
+
     # ---- sync helpers (called via asyncio.to_thread) ----
 
     @staticmethod
@@ -361,10 +418,196 @@ class YFinanceProvider(MarketPriceProvider):
             logger.warning("yfinance quote failed for %s: %s", symbol, e)
             return None
 
+    @staticmethod
+    def _stock_fundamentals_sync(symbol: str, years: int) -> Optional[StockFundamentals]:
+        import yfinance as yf
+
+        try:
+            ticker = yf.Ticker(symbol)
+        except Exception as e:  # pragma: no cover
+            logger.warning("yfinance fundamentals failed to init ticker %s: %s", symbol, e)
+            return None
+
+        try:
+            info = ticker.info or {}
+        except Exception:
+            info = {}
+        sector = info.get("sector") or None
+        industry = info.get("industry") or None
+
+        net_debt_to_ebitda = _net_debt_to_ebitda(info)
+
+        revenue_by_year, net_income_by_year = _revenue_and_net_income_by_year(ticker, years)
+        equity_by_year = _stockholder_equity_by_year(ticker, years)
+
+        roe_avg_pct = _average_roe_pct(net_income_by_year, equity_by_year)
+        revenue_cagr_pct = _cagr_pct(revenue_by_year)
+        profit_cagr_pct = _cagr_pct(net_income_by_year)
+        years_available = len(set(revenue_by_year) | set(net_income_by_year) | set(equity_by_year))
+
+        return StockFundamentals(
+            sector=sector,
+            industry=industry,
+            roe_avg_pct=roe_avg_pct,
+            revenue_cagr_pct=revenue_cagr_pct,
+            profit_cagr_pct=profit_cagr_pct,
+            net_debt_to_ebitda=net_debt_to_ebitda,
+            years_available=years_available,
+        )
+
+    @staticmethod
+    def _dividend_history_sync(symbol: str, since: Optional[_date]) -> list[DividendEvent]:
+        import yfinance as yf
+
+        try:
+            series = yf.Ticker(symbol).dividends
+        except Exception as e:  # pragma: no cover — upstream flakiness
+            logger.warning("yfinance dividend history failed for %s: %s", symbol, e)
+            return []
+        if series is None or len(series) == 0:
+            return []
+
+        events: list[DividendEvent] = []
+        for ts, amount in series.items():
+            try:
+                event_date = ts.date() if hasattr(ts, "date") else ts
+                if since is not None and event_date < since:
+                    continue
+                events.append(DividendEvent(date=event_date, amount=float(amount)))
+            except (TypeError, ValueError):
+                continue
+        return events
+
 
 # Asset logos reuse the shared favicon helper. Kept as a module-local alias so
 # existing call sites stay untouched.
 _logo_url_for = favicon_url_for
+
+
+def _net_debt_to_ebitda(info: dict) -> Optional[float]:
+    """(Total Debt − Total Cash) / EBITDA from yfinance's `.info`.
+
+    None whenever any input is missing or EBITDA isn't positive — a
+    negative/zero EBITDA makes the ratio meaningless, not "good" or "bad".
+    """
+    total_debt = info.get("totalDebt")
+    total_cash = info.get("totalCash")
+    ebitda = info.get("ebitda")
+    if total_debt is None or total_cash is None or not ebitda:
+        return None
+    try:
+        ebitda_f = float(ebitda)
+        if ebitda_f <= 0:
+            return None
+        return (float(total_debt) - float(total_cash)) / ebitda_f
+    except (TypeError, ValueError):
+        return None
+
+
+# Line-item labels vary across tickers/yfinance versions. Matched by a
+# normalized (lowercase, spaces stripped) lookup so e.g. "Total Revenue" and
+# "TotalRevenue" both resolve.
+_REVENUE_LABELS = ("totalrevenue",)
+_NET_INCOME_LABELS = ("netincome", "netincomecommonstockholders")
+_EQUITY_LABELS = ("totalequitygrossminorityinterest", "stockholdersequity", "totalstockholderequity")
+
+
+def _normalize_label(value: object) -> str:
+    return str(value).lower().replace(" ", "").replace("_", "")
+
+
+def _find_row(df, labels: tuple[str, ...]):
+    """Return the first row (a pandas Series indexed by period) whose label
+    matches one of `labels`, or None if the statement lacks all of them."""
+    if df is None:
+        return None
+    try:
+        if df.empty:
+            return None
+    except AttributeError:
+        return None
+    normalized_index = {_normalize_label(idx): idx for idx in df.index}
+    for label in labels:
+        original = normalized_index.get(label)
+        if original is not None:
+            return df.loc[original]
+    return None
+
+
+def _row_by_year(row, years: int) -> dict[int, float]:
+    """A pandas Series (index = period-end Timestamps, values = the line
+    item) into {year: value}, most-recent-`years` periods only, skipping
+    NaN/unparsable entries."""
+    if row is None:
+        return {}
+    out: dict[int, float] = {}
+    try:
+        import pandas as pd
+    except ImportError:  # pragma: no cover
+        return {}
+    for period, value in row.items():
+        if value is None or (hasattr(pd, "isna") and pd.isna(value)):
+            continue
+        try:
+            year = int(getattr(period, "year", period))
+            out[year] = float(value)
+        except (TypeError, ValueError):
+            continue
+    # Keep only the most recent `years` distinct years.
+    for year in sorted(out.keys(), reverse=True)[years:]:
+        out.pop(year, None)
+    return out
+
+
+def _revenue_and_net_income_by_year(ticker, years: int) -> tuple[dict[int, float], dict[int, float]]:
+    try:
+        income_stmt = ticker.income_stmt
+    except Exception:
+        income_stmt = None
+    revenue_row = _find_row(income_stmt, _REVENUE_LABELS)
+    net_income_row = _find_row(income_stmt, _NET_INCOME_LABELS)
+    return _row_by_year(revenue_row, years), _row_by_year(net_income_row, years)
+
+
+def _stockholder_equity_by_year(ticker, years: int) -> dict[int, float]:
+    try:
+        balance_sheet = ticker.balance_sheet
+    except Exception:
+        balance_sheet = None
+    equity_row = _find_row(balance_sheet, _EQUITY_LABELS)
+    return _row_by_year(equity_row, years)
+
+
+def _average_roe_pct(
+    net_income_by_year: dict[int, float], equity_by_year: dict[int, float]
+) -> Optional[float]:
+    """Average of (net income / equity) per year, in %, over years where
+    both figures exist and equity is positive."""
+    ratios: list[float] = []
+    for year, income in net_income_by_year.items():
+        equity = equity_by_year.get(year)
+        if equity is None or equity <= 0:
+            continue
+        ratios.append(income / equity * 100)
+    if not ratios:
+        return None
+    return sum(ratios) / len(ratios)
+
+
+def _cagr_pct(values_by_year: dict[int, float]) -> Optional[float]:
+    """Compound annual growth rate (%) from the oldest to the newest year
+    available. None with fewer than 2 years, or when the base year's value
+    isn't positive (CAGR is undefined from a zero/negative base)."""
+    if len(values_by_year) < 2:
+        return None
+    years_sorted = sorted(values_by_year.keys())
+    first_year, last_year = years_sorted[0], years_sorted[-1]
+    first_value = values_by_year[first_year]
+    last_value = values_by_year[last_year]
+    span = last_year - first_year
+    if span <= 0 or first_value <= 0:
+        return None
+    return ((last_value / first_value) ** (1 / span) - 1) * 100
 
 
 def _last_decimal_close(series) -> Optional[Decimal]:
@@ -479,6 +722,25 @@ class CompositeMarketPriceProvider(MarketPriceProvider):
         if tesouro:
             out.update(await self._tesouro_latest_prices(tesouro))
         return out
+
+    async def get_stock_fundamentals(self, symbol: str, years: int = 5) -> Optional[StockFundamentals]:
+        # Fundamentals only make sense for the default (Yahoo) provider —
+        # Tesouro Direto bonds never reach the stock checklist (gated by
+        # Asset.type == "stock" at the API layer).
+        get = getattr(self.default_provider, "get_stock_fundamentals", None)
+        if get is None:
+            return None
+        return await get(symbol, years=years)
+
+    async def get_dividend_history(self, symbol: str, since: Optional[_date] = None) -> list[DividendEvent]:
+        # Tesouro Direto bonds don't pay dividends in this sense — routed
+        # only to the default (Yahoo) provider.
+        if _is_tesouro_symbol(symbol):
+            return []
+        get = getattr(self.default_provider, "get_dividend_history", None)
+        if get is None:
+            return []
+        return await get(symbol, since=since)
 
     async def _search_tesouro(self, query: str, limit: int) -> list[MarketSymbolMatch]:
         from app.providers.tesouro_direto import (
