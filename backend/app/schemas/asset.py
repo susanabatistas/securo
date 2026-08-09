@@ -33,6 +33,7 @@ class AssetCreate(BaseModel):
     # médio model, consistent with the transaction ledger). When omitted, the
     # service seeds the buy at the live quote ("bought at market now").
     unit_price: Optional[Decimal] = None
+    tax_category: Optional[str] = None  # renda_fixa, fii, acoes_etfs_cripto
 
 
 class AssetUpdate(BaseModel):
@@ -57,6 +58,10 @@ class AssetUpdate(BaseModel):
     group_id: Optional[uuid.UUID] = None
     ticker: Optional[str] = None
     ticker_exchange: Optional[str] = None
+    # Manual override of the automatic stock checklist verdict. None clears
+    # the override and falls back to the computed result.
+    stock_checklist_status: Optional[str] = None
+    tax_category: Optional[str] = None
 
 
 class AssetRead(BaseModel):
@@ -100,6 +105,24 @@ class AssetRead(BaseModel):
     total_invested: Optional[float] = None
     realized_gain: Optional[float] = None
     transaction_count: int = 0
+    # Raw manual override of the stock checklist verdict, or None if unset —
+    # the computed verdict itself comes from GET /assets/{id}/stock-checklist.
+    stock_checklist_status: Optional[str] = None
+    # Resolved IR-estimator bucket: override if set, else the default derived
+    # from type+ticker, or None when the estimator doesn't apply to this
+    # asset (real_estate/vehicle/valuable/other) — None here is a legitimate
+    # resolved state, not "unset".
+    tax_category: Optional[str] = None
+    # Cost basis converted to the user's primary currency at the *purchase*
+    # FX rate (not today's) — already computed/cached by
+    # asset_service/asset_transaction_service, just not surfaced until now.
+    # None when the asset's currency matches the primary currency, or when
+    # no rate was available to stamp it yet.
+    purchase_price_primary: Optional[float] = None
+    # FX rate used for purchase_price_primary, computed on read (not
+    # stored) from the historical rate on purchase_date. None when the
+    # asset's currency matches the primary currency.
+    fx_rate_used: Optional[float] = None
 
     model_config = ConfigDict(from_attributes=True)
 

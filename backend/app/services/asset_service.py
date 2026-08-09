@@ -21,6 +21,7 @@ from app.providers.market_price import (
     get_market_price_provider,
 )
 from app.schemas.asset import AssetCreate, AssetUpdate, AssetValueCreate, AssetRead, AssetValueRead
+from app.services.asset_classification import resolve_tax_category
 from app.services.fx_rate_service import convert, stamp_primary_amount
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,11 @@ def _asset_to_read(
         total_invested=total_invested,
         realized_gain=float(asset.realized_gain) if asset.realized_gain is not None else None,
         transaction_count=transaction_count,
+        stock_checklist_status=asset.stock_checklist_status,
+        tax_category=resolve_tax_category(asset.type, asset.tax_category, asset.ticker),
+        purchase_price_primary=(
+            float(asset.purchase_price_primary) if asset.purchase_price_primary is not None else None
+        ),
     )
 
 
