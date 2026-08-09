@@ -37,6 +37,17 @@ import type {
   AssetValue,
   MarketSymbolMatch,
   MarketSymbolQuote,
+  StockChecklistResult,
+  IREstimateResponse,
+  B3Row,
+  B3IncomeRow,
+  B3ImportPreviewResponse,
+  B3ImportApplyResponse,
+  AssetIncome,
+  AssetIncomeKind,
+  AssetIncomeMonthlySummary,
+  DividendHistoryPreviewResponse,
+  DividendHistoryCandidate,
   Attachment,
   Goal,
   GoalSummary,
@@ -1095,6 +1106,86 @@ export const assets = {
     tx: { ticker: string; quantity: number; price: number; fee?: number; date: string; name?: string; group_id?: string | null; notes?: string },
   ): Promise<Asset> => {
     const { data } = await api.post('/assets/buy', tx)
+    return data
+  },
+  // Deterministic checklist (ROE, CAGR receita/lucro, dívida líquida/EBITDA)
+  // for individual stocks — thresholds are adjustable, not fixed server-side.
+  stockChecklist: async (
+    id: string,
+    thresholds?: Partial<{ roe_min: number; revenue_cagr_min: number; profit_cagr_min: number; net_debt_ebitda_max: number; years: number }>,
+  ): Promise<StockChecklistResult> => {
+    const { data } = await api.get(`/assets/${id}/stock-checklist`, { params: thresholds })
+    return data
+  },
+  // Estimated IR (income tax) as if every active holding with a gain were
+  // sold today — deterministic, no AI. See IREstimateResponse.disclaimer.
+  irEstimate: async (): Promise<IREstimateResponse> => {
+    const { data } = await api.get('/assets/ir-estimate')
+    return data
+  },
+  // B3 "Movimentação" CSV import — preview parses the file and returns the
+  // individual rows verbatim (sent back to apply, no re-upload/re-parse).
+  importB3Preview: async (file: File): Promise<B3ImportPreviewResponse> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const { data } = await api.post('/assets/import/b3-preview', formData)
+    return data
+  },
+  importB3Apply: async (rows: B3Row[], incomeRows: B3IncomeRow[], groupId?: string | null): Promise<B3ImportApplyResponse> => {
+    const { data } = await api.post('/assets/import/b3-apply', {
+      rows, income_rows: incomeRows, group_id: groupId ?? null,
+    })
+    return data
+  },
+  // Proventos (dividendo/JCP/rendimento) — deliberately separate from the
+  // buy/sell ledger. Manual entry is the only path for international
+  // assets (never in a B3 statement); a sold/archived asset can still
+  // receive income logged against it.
+  income: {
+    list: async (year?: number): Promise<AssetIncome[]> => {
+      const { data } = await api.get('/assets/income', { params: { year } })
+      return data
+    },
+    listForAsset: async (assetId: string): Promise<AssetIncome[]> => {
+      const { data } = await api.get(`/assets/${assetId}/income`)
+      return data
+    },
+    summary: async (year?: number): Promise<AssetIncomeMonthlySummary> => {
+      const { data } = await api.get('/assets/income/summary', { params: { year } })
+      return data
+    },
+    add: async (assetId: string, income: { kind: AssetIncomeKind; amount: number; date: string; notes?: string }): Promise<AssetIncome> => {
+      const { data } = await api.post(`/assets/${assetId}/income`, income)
+      return data
+    },
+    update: async (incomeId: string, income: Partial<{ kind: AssetIncomeKind; amount: number; date: string; notes: string }>): Promise<AssetIncome> => {
+      const { data } = await api.patch(`/assets/income/${incomeId}`, income)
+      return data
+    },
+    delete: async (incomeId: string): Promise<void> => {
+      await api.delete(`/assets/income/${incomeId}`)
+    },
+    // yfinance-backed history — confirmed reliable for BR and US tickers,
+    // including FIIs. Preview/apply so the user confirms before writing.
+    fetchPreview: async (assetId: string): Promise<DividendHistoryPreviewResponse> => {
+      const { data } = await api.get(`/assets/${assetId}/income/fetch-preview`)
+      return data
+    },
+    fetchApply: async (assetId: string, candidates: DividendHistoryCandidate[]): Promise<AssetIncome[]> => {
+      const { data } = await api.post(`/assets/${assetId}/income/fetch-apply`, { candidates })
+      return data
+    },
+  },
+}
+
+// Market indices (BCB) — CDI acumulado and USD/BRL PTAX, no key required.
+export const marketIndices = {
+  cdi12m: async (): Promise<{ cdi_12m_pct: number }> => {
+    const { data } = await api.get('/market-indices/cdi-12m')
+    return data
+  },
+  usdBrl: async (): Promise<{ rate: number; as_of: string; source: string }> => {
+    const { data } = await api.get('/market-indices/usd-brl')
     return data
   },
 }

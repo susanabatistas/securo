@@ -616,6 +616,162 @@ export interface Asset {
   total_invested: number | null
   realized_gain: number | null
   transaction_count: number
+  // Manual override of the stock checklist verdict, or null if unset.
+  stock_checklist_status: StockChecklistStatus | null
+  // Resolved IR-estimator bucket: override, computed default, or null when
+  // the estimator doesn't apply to this asset (real_estate/vehicle/etc).
+  tax_category: TaxCategory | null
+  // Cost basis converted at the *purchase*-date FX rate (not today's) —
+  // null when currency matches the user's primary currency, or no rate
+  // was available to stamp it yet.
+  purchase_price_primary: number | null
+  // FX rate used for purchase_price_primary, computed on read. Null when
+  // currency matches the user's primary currency.
+  fx_rate_used: number | null
+}
+
+export const TAX_CATEGORIES = ['renda_fixa', 'fii', 'acoes_etfs_cripto'] as const
+export type TaxCategory = (typeof TAX_CATEGORIES)[number]
+
+export const STOCK_CHECKLIST_STATUSES = ['aprovado', 'rever', 'a_evitar'] as const
+export type StockChecklistStatus = (typeof STOCK_CHECKLIST_STATUSES)[number]
+
+export interface StockChecklistCriterion {
+  key: 'roe' | 'revenue_cagr' | 'profit_cagr' | 'net_debt_to_ebitda'
+  value: number | null
+  threshold: number
+  status: 'pass' | 'fail' | 'not_evaluated'
+}
+
+export interface StockChecklistResult {
+  symbol: string
+  sector: string | null
+  industry: string | null
+  criteria: StockChecklistCriterion[]
+  overall_status: StockChecklistStatus | 'nao_avaliado'
+  years_used: number
+  manual_override: StockChecklistStatus | null
+}
+
+export interface IRAssetEstimate {
+  asset_id: string
+  name: string
+  ticker: string | null
+  tax_category: TaxCategory
+  gain: number
+  purchase_date: string | null
+  days_held: number | null
+  rate_pct: number
+  estimated_tax: number
+  note: string | null
+}
+
+export interface IREstimateResponse {
+  assets: IRAssetEstimate[]
+  total_estimated_tax: number
+  // False when the user's primary currency isn't BRL — BR tax rates don't
+  // apply to a foreign-currency gain, so nothing is computed.
+  applicable: boolean
+  disclaimer: string
+}
+
+export interface B3Row {
+  ticker: string
+  kind: 'buy' | 'sell'
+  quantity: number
+  price: number
+  date: string
+}
+
+export interface B3TickerPreview {
+  ticker: string
+  buy_quantity: number
+  buy_average_price: number
+  sell_quantity: number
+  sell_average_price: number
+  first_date: string
+  last_date: string
+  row_count: number
+}
+
+export interface B3IncomeRow {
+  ticker: string
+  kind: 'dividendo' | 'jcp' | 'rendimento'
+  amount: number
+  date: string
+}
+
+export interface B3ImportPreviewResponse {
+  rows: B3Row[]
+  income_rows: B3IncomeRow[]
+  tickers: B3TickerPreview[]
+  skipped_count: number
+  skipped_kinds: Record<string, number>
+}
+
+export interface B3ApplyError {
+  ticker: string
+  kind: string
+  date: string
+  reason: string
+}
+
+export interface B3ImportApplyResponse {
+  applied_count: number
+  income_applied_count: number
+  errors: B3ApplyError[]
+}
+
+export type AssetIncomeKind = 'dividendo' | 'jcp' | 'rendimento' | 'outro'
+
+export interface AssetIncome {
+  id: string
+  asset_id: string
+  kind: AssetIncomeKind
+  amount: number
+  date: string
+  source: string
+  notes: string | null
+  created_at: string
+  asset_name: string | null
+  ticker: string | null
+  currency: string | null
+  logo_url: string | null
+  asset_sold: boolean
+  // `amount` converted to the user's primary currency at the historical
+  // rate on `date` — null only if unset (same-currency rows just mirror
+  // `amount`). Chart/total aggregation always uses this, never raw
+  // `amount`, so mixed-currency portfolios don't silently sum USD as BRL.
+  amount_primary: number | null
+}
+
+export interface AssetIncomeByAsset {
+  asset_id: string
+  asset_name: string
+  ticker: string | null
+  total: number
+}
+
+export interface AssetIncomeMonth {
+  month: string
+  total: number
+  by_asset: AssetIncomeByAsset[]
+}
+
+export interface AssetIncomeMonthlySummary {
+  months: AssetIncomeMonth[]
+  total: number
+}
+
+export interface DividendHistoryCandidate {
+  date: string
+  amount: number
+  kind: AssetIncomeKind
+}
+
+export interface DividendHistoryPreviewResponse {
+  ticker: string
+  candidates: DividendHistoryCandidate[]
 }
 
 export interface AssetTransaction {

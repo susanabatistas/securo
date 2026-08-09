@@ -3,8 +3,13 @@ import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRegisterPageChatContext } from '@/lib/page-chat-context'
-import { assets, assetGroups, currencies as currenciesApi } from '@/lib/api'
+import { assets, assetGroups, currencies as currenciesApi, marketIndices } from '@/lib/api'
 import { localDateString } from '@/lib/date-utils'
+import { resolveAssetType } from '@/lib/asset-classification'
+import { StockChecklistSection } from '@/components/assets/stock-checklist-section'
+import { IREstimateDialog } from '@/components/assets/ir-estimate-dialog'
+import { B3ImportDialog } from '@/components/assets/b3-import-dialog'
+import { AssetIncomeTab } from '@/components/assets/asset-income-tab'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { DatePickerInput } from '@/components/ui/date-picker-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote } from '@/types'
+import { TAX_CATEGORIES } from '@/types'
 import {
   Home,
   Car,
@@ -41,6 +47,8 @@ import {
   Bitcoin,
   PieChart,
   AlertTriangle,
+  Receipt,
+  Upload,
 } from 'lucide-react'
 import {
   AreaChart,
@@ -237,6 +245,39 @@ function TxTotalPreview({ quantity, price, fee, kind, currency, locale }: {
   )
 }
 
+// Purchase-side original-currency breakdown for a foreign-currency asset —
+// native cost, the historical FX rate used (from FxRate at purchase_date,
+// not today's), and the converted cost. Mirrors the current-value native/
+// primary display already in HoldingRow, but for the purchase, using
+// purchase_price_primary/fx_rate_used (Seção 2, item 4).
+function OriginalCurrencyBlock({ asset, userCurrency, locale, mask }: {
+  asset: Asset; userCurrency: string; locale: string; mask: (v: string) => string
+}) {
+  const { t } = useTranslation()
+  if (asset.currency === userCurrency || asset.purchase_price == null) return null
+  return (
+    <div className="mx-3 mb-3 rounded-lg border border-border p-3 text-xs">
+      <div className="font-medium text-muted-foreground mb-1.5">{t('assets.originalCurrencyTitle')}</div>
+      <div className="flex items-center justify-between">
+        <span className="text-muted-foreground">{t('assets.originalCurrencyCost')}</span>
+        <span className="tabular-nums text-foreground">{mask(formatCurrency(asset.purchase_price, asset.currency, locale))}</span>
+      </div>
+      {asset.fx_rate_used != null && (
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-muted-foreground">{t('assets.originalCurrencyRate')}</span>
+          <span className="tabular-nums text-foreground">1 {asset.currency} = {asset.fx_rate_used.toFixed(4)} {userCurrency}</span>
+        </div>
+      )}
+      {asset.purchase_price_primary != null && (
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-muted-foreground">{t('assets.originalCurrencyConverted')}</span>
+          <span className="font-medium tabular-nums text-foreground">{mask(formatCurrency(asset.purchase_price_primary, userCurrency, locale))}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // One row of the holdings table. All props are primitives/stable callbacks
 // (see AssetsPage's useCallback-wrapped handlers), so memo() lets an
 // unrelated parent re-render — e.g. a keystroke in the Add Asset dialog —
@@ -313,7 +354,7 @@ const HoldingRow = memo(function HoldingRow({
                 </Badge>
               )}
               {asset.sell_date && (
-                <Badge variant="outline" className="text-[9px] px-1 py-0 text-rose-600 border-rose-200">{t('assets.sold')}</Badge>
+                <Badge variant="outline" className="text-[9px] px-1 py-0 text-rose-600 border-rose-200 dark:border-rose-800">{t('assets.sold')}</Badge>
               )}
               {isSynced && !isMarketPriced && (
                 <Badge variant="outline" className="text-[9px] px-1 py-0 text-sky-600 border-sky-200">{t('assets.synced')}</Badge>
@@ -390,6 +431,12 @@ const HoldingRow = memo(function HoldingRow({
           <>
             {/* Value-evolution chart on top, then the buy/sell ledger. */}
             <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} chartOnly />
+            <OriginalCurrencyBlock asset={asset} userCurrency={userCurrency} locale={locale} mask={mask} />
+            {asset.type === 'stock' && (
+              <div className="px-3 pb-3">
+                <StockChecklistSection asset={asset} canWrite={canWrite} />
+              </div>
+            )}
             <HoldingLedger
               asset={asset}
               locale={locale}
@@ -401,7 +448,10 @@ const HoldingRow = memo(function HoldingRow({
             />
           </>
         ) : (
-          <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} />
+          <>
+            <AssetDetail assetId={asset.id} currency={asset.currency} locale={locale} dateLocale={dateLocale} purchasePrice={asset.purchase_price} purchaseDate={asset.purchase_date} valuationMethod={asset.valuation_method} canWrite={canWrite} />
+            <OriginalCurrencyBlock asset={asset} userCurrency={userCurrency} locale={locale} mask={mask} />
+          </>
         )
       )}
     </div>
@@ -457,6 +507,17 @@ const AssetDialog = memo(function AssetDialog({
   const [formGrowthRate, setFormGrowthRate] = useState('')
   const [formGrowthFrequency, setFormGrowthFrequency] = useState<string>('monthly')
   const [formGrowthStartDate, setFormGrowthStartDate] = useState<string>('')
+  // Classification override. AssetRead always returns the *resolved*
+  // value (default-or-override), so we can't tell from it alone whether the
+  // user previously overrode it — only send this on save if the user
+  // actually touched the select in this dialog session, otherwise an
+  // unrelated field edit would silently freeze the computed default.
+  // The resolved value can legitimately be null ("not applicable" for
+  // real_estate/vehicle/valuable/other) — displayed as "Automático" too,
+  // since there's no separate stored state for a forced not-applicable
+  // override (only unset vs. one of the 3 categories).
+  const [formTaxCategory, setFormTaxCategory] = useState<string>('__auto__')
+  const [formTaxCategoryTouched, setFormTaxCategoryTouched] = useState(false)
   // Market-price form state
   const [formTickerQuery, setFormTickerQuery] = useState('')
   const [tickerMatches, setTickerMatches] = useState<MarketSymbolMatch[]>([])
@@ -508,12 +569,21 @@ const AssetDialog = memo(function AssetDialog({
       setFormGrowthRate('')
       setFormGrowthFrequency('monthly')
       setFormGrowthStartDate('')
+      setFormTaxCategory('__auto__')
+      setFormTaxCategoryTouched(false)
       resetMarketPriceForm()
     } else {
       const asset = mode.asset
       setEditingAsset(asset)
       setFormName(asset.name)
       setFormType(asset.type)
+      // null means "not applicable" (real_estate/vehicle/etc, the computed
+      // default for that type) — same display bucket as "Automático" since
+      // there's no separate stored state for "forced not-applicable" (the
+      // override column only distinguishes "unset" from one of the 3 real
+      // categories).
+      setFormTaxCategory(asset.tax_category ?? '__auto__')
+      setFormTaxCategoryTouched(false)
       setFormCurrency(asset.currency)
       setFormGroupId(asset.group_id ?? '')
       setFormMethod(asset.valuation_method)
@@ -680,11 +750,11 @@ const AssetDialog = memo(function AssetDialog({
         setFormName(quote.name || quote.symbol)
       }
       setFormCurrency(quote.currency)
-      // Classify the asset from the quote type (EQUITY → stock, etc.) so
-      // the Tipo dropdown lands on something meaningful by default. We
-      // skip this when the user already picked a non-default type, so
-      // manual overrides stick.
-      const suggestedType = assetTypeFromQuoteType(quote.quote_type)
+      // Classify the asset from the quote type (EQUITY → stock, etc.), with
+      // a static ticker override for known-ambiguous BR symbols (Yahoo often
+      // tags FIIs as EQUITY) — see resolveAssetType. Skipped when the user
+      // already picked a non-default type, so manual overrides stick.
+      const suggestedType = resolveAssetType(match.symbol, assetTypeFromQuoteType(quote.quote_type))
       if (formType === 'other' || formType === 'investment') {
         setFormType(suggestedType)
       }
@@ -734,6 +804,10 @@ const AssetDialog = memo(function AssetDialog({
 
     if (!editingAsset && formCurrentValue) {
       payload.current_value = parseFloat(formCurrentValue)
+    }
+
+    if (formTaxCategoryTouched) {
+      payload.tax_category = formTaxCategory === '__auto__' ? null : formTaxCategory
     }
 
     return payload
@@ -847,6 +921,28 @@ const AssetDialog = memo(function AssetDialog({
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            {/* IR bucket — default automático por tipo, sobrescrevível aqui. */}
+            <div className="space-y-2">
+              <Label htmlFor="asset-tax-category">{t('assets.taxCategoryLabel')}</Label>
+              <Select
+                value={formTaxCategory}
+                onValueChange={(v) => { setFormTaxCategory(v); setFormTaxCategoryTouched(true) }}
+              >
+                <SelectTrigger id="asset-tax-category" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {/* "Automático" can legitimately resolve to "not applicable"
+                      (real estate/vehicle/etc), so it's always shown, not
+                      just on create. */}
+                  <SelectItem value="__auto__">{t('assets.checklistAuto')}</SelectItem>
+                  {TAX_CATEGORIES.map((tc) => (
+                    <SelectItem key={tc} value={tc}>{t(`assets.taxCategory.${tc}`)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Valuation Method — locked on edit */}
@@ -1218,13 +1314,15 @@ export default function AssetsPage() {
     staleTime: Infinity,
   })
 
-  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions'>('holdings')
+  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions' | 'income'>('holdings')
   // Holding id for the lightweight "add transaction to this holding" dialog,
   // opened from the holdings table ("+ add buys") and the inline ledger.
   const [addTxAssetId, setAddTxAssetId] = useState<string | null>(null)
   // Drives the Create/Edit Asset dialog (a separate component — see
   // AssetDialog above — so typing in it doesn't re-render this whole page).
   const [assetDialogMode, setAssetDialogMode] = useState<AssetDialogMode>(null)
+  const [irEstimateOpen, setIrEstimateOpen] = useState(false)
+  const [b3ImportOpen, setB3ImportOpen] = useState(false)
   const openAssetDialog = useCallback((asset: Asset) => setAssetDialogMode({ kind: 'edit', asset }), [])
   // Set when a wallet gets created from inside the asset dialog's
   // "+ New Wallet" link, so the new id can flow back down once created.
@@ -1346,6 +1444,19 @@ export default function AssetsPage() {
     return { totalInvestedPrimary: invested, totalGainPrimary: gain }
   }, [activeAssets])
   const portfolioReturnPct = totalInvestedPrimary > 0 ? (totalGainPrimary / totalInvestedPrimary) * 100 : null
+
+  // Trailing 12-month accumulated CDI, for the "% do CDI" comparison next to
+  // the portfolio return. It's an official BCB rate published once per
+  // business day (same TTL as the backend's own cache of it, see
+  // app/providers/bcb.py) — a 24h staleTime never shows a stale reading
+  // within the day and avoids re-fetching this secondary reference number
+  // on every mount.
+  const { data: cdi12m } = useQuery({
+    queryKey: ['cdi-12m'],
+    queryFn: () => marketIndices.cdi12m(),
+    staleTime: 24 * 60 * 60 * 1000,
+    retry: false,
+  })
 
   // Publish a snapshot of what's on the Assets page so the global chat
   // (⌘J) can answer "what does this chart mean / what are these
@@ -1678,19 +1789,42 @@ export default function AssetsPage() {
         section={t('assets.title')}
         title={t('assets.title')}
         action={
-          canWrite ? (
-            <div className="flex items-center gap-2">
-              <Button onClick={openCreateWallet} variant="outline" className="gap-1.5">
-                <Wallet size={16} />
-                {t('assets.newWallet')}
-              </Button>
-              <Button onClick={() => setAssetDialogMode({ kind: 'create' })} className="gap-1.5">
-                <Plus size={16} />
-                {t('assets.addAsset')}
-              </Button>
-            </div>
-          ) : undefined
+          <div className="flex items-center gap-2">
+            <Button onClick={() => setIrEstimateOpen(true)} variant="outline" className="gap-1.5">
+              <Receipt size={16} />
+              {t('assets.irEstimateButton')}
+            </Button>
+            {canWrite && (
+              <>
+                <Button onClick={() => setB3ImportOpen(true)} variant="outline" className="gap-1.5">
+                  <Upload size={16} />
+                  {t('assets.b3ImportButton')}
+                </Button>
+                <Button onClick={openCreateWallet} variant="outline" className="gap-1.5">
+                  <Wallet size={16} />
+                  {t('assets.newWallet')}
+                </Button>
+                <Button onClick={() => setAssetDialogMode({ kind: 'create' })} className="gap-1.5">
+                  <Plus size={16} />
+                  {t('assets.addAsset')}
+                </Button>
+              </>
+            )}
+          </div>
         }
+      />
+      <IREstimateDialog
+        open={irEstimateOpen}
+        onOpenChange={setIrEstimateOpen}
+        userCurrency={userCurrency}
+        locale={locale}
+        mask={mask}
+      />
+      <B3ImportDialog
+        open={b3ImportOpen}
+        onOpenChange={setB3ImportOpen}
+        locale={locale}
+        onImported={refetchAssetViews}
       />
 
       {/* Holdings (consolidated by ticker) vs. the buy/sell ledger (#235) */}
@@ -1707,6 +1841,12 @@ export default function AssetsPage() {
         >
           {t('assets.tabTransactions')}
         </button>
+        <button
+          onClick={() => setActiveTab('income')}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'income' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          {t('assets.tabIncome')}
+        </button>
       </div>
 
       {activeTab === 'transactions' ? (
@@ -1718,6 +1858,14 @@ export default function AssetsPage() {
           mask={mask}
           canWrite={canWrite}
           onChanged={refetchAssetViews}
+        />
+      ) : activeTab === 'income' ? (
+        <AssetIncomeTab
+          userCurrency={userCurrency}
+          locale={locale}
+          dateLocale={dateLocale}
+          mask={mask}
+          canWrite={canWrite}
         />
       ) : (
       <>
@@ -1749,6 +1897,7 @@ export default function AssetsPage() {
             onWalletClick={onWalletClick}
             returnPct={portfolioReturnPct}
             returnAmount={totalGainPrimary}
+            cdi12mPct={cdi12m?.cdi_12m_pct ?? null}
           />
         )
       )}
@@ -1989,7 +2138,7 @@ const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6',
 // though its props (data/wallets are already useMemo'd upstream) hadn't
 // changed. Props are all primitives/memoized values, so shallow-equal
 // bailout is safe and effective.
-const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount }: {
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount, cdi12mPct }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
@@ -2004,6 +2153,10 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
   // assets with a known purchase price — null when no asset has one.
   returnPct: number | null
   returnAmount: number
+  // Trailing 12-month accumulated CDI (%), from BCB SGS. Null while loading
+  // or when the BCB integration is disabled/unreachable — "% do CDI" is
+  // simply omitted in that case rather than showing a misleading 0%.
+  cdi12mPct: number | null
 }) {
   const { t } = useTranslation()
   // Default to wallet mode: with many synced CDBs the asset view turns
@@ -2245,6 +2398,11 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           {returnPct != null && (
             <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
               {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}% ({mask(formatCurrency(returnAmount, currency, loc))})
+            </p>
+          )}
+          {returnPct != null && cdi12mPct != null && cdi12mPct > 0 && (
+            <p className="text-[11px] text-muted-foreground tabular-nums">
+              {t('assets.pctOfCdi', { pct: ((returnPct / cdi12mPct) * 100).toFixed(0) })}
             </p>
           )}
         </div>
@@ -2962,7 +3120,7 @@ function AssetTransactionsTab({
               <div key={tx.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/20 transition-colors">
                 <Badge
                   variant="outline"
-                  className={`text-[10px] px-1.5 py-0 shrink-0 ${tx.kind === 'buy' ? 'text-emerald-600 border-emerald-200' : 'text-rose-600 border-rose-200'}`}
+                  className={`text-[10px] px-1.5 py-0 shrink-0 ${tx.kind === 'buy' ? 'text-emerald-600 border-emerald-200 dark:border-emerald-800' : 'text-rose-600 border-rose-200 dark:border-rose-800'}`}
                 >
                   {tx.kind === 'buy' ? t('assets.txBuy') : t('assets.txSell')}
                 </Badge>
@@ -3206,7 +3364,7 @@ function HoldingLedger({
             <div key={tx.id} className="flex items-center gap-3 px-3 py-2">
               <Badge
                 variant="outline"
-                className={`text-[9px] px-1 py-0 shrink-0 ${tx.kind === 'buy' ? 'text-emerald-600 border-emerald-200' : 'text-rose-600 border-rose-200'}`}
+                className={`text-[9px] px-1 py-0 shrink-0 ${tx.kind === 'buy' ? 'text-emerald-600 border-emerald-200 dark:border-emerald-800' : 'text-rose-600 border-rose-200 dark:border-rose-800'}`}
               >
                 {tx.kind === 'buy' ? t('assets.txBuy') : t('assets.txSell')}
               </Badge>
