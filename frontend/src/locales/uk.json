@@ -1133,6 +1133,7 @@
     "chartValueMode": "Режим графіка",
     "chartValue": "Вартість",
     "chartReturn": "Дохідність",
+    "chartCdi": "CDI",
     "chartPeriod": "Період графіка",
     "periodAll": "Усі",
     "portfolioValue": "Вартість портфеля",

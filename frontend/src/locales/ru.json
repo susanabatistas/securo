@@ -1133,6 +1133,7 @@
     "chartValueMode": "Режим графика",
     "chartValue": "Стоимость",
     "chartReturn": "Доходность",
+    "chartCdi": "CDI",
     "chartPeriod": "Период графика",
     "periodAll": "Все",
     "portfolioValue": "Стоимость портфеля",

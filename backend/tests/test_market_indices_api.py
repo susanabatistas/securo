@@ -28,6 +28,31 @@ async def test_cdi_12m_upstream_failure_502(client: AsyncClient, auth_headers, t
 
 
 @pytest.mark.asyncio
+async def test_cdi_monthly_success(client: AsyncClient, auth_headers, test_user):
+    fake = AsyncMock()
+    fake.get_cdi_monthly_series = AsyncMock(return_value=[
+        BCBQuote(value=Decimal("0.85"), date=date(2026, 6, 30)),
+        BCBQuote(value=Decimal("0.90"), date=date(2026, 7, 31)),
+    ])
+    with patch("app.api.market_indices.get_bcb_provider", return_value=fake):
+        resp = await client.get("/api/market-indices/cdi-monthly?months=2", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == [
+        {"date": "2026-06-30", "rate_pct": 0.85},
+        {"date": "2026-07-31", "rate_pct": 0.90},
+    ]
+    fake.get_cdi_monthly_series.assert_awaited_once_with(months=2)
+
+
+@pytest.mark.asyncio
+async def test_cdi_monthly_disabled_returns_404(client: AsyncClient, auth_headers, test_user):
+    with patch("app.api.market_indices.get_settings") as mock_settings:
+        mock_settings.return_value.bcb_enabled = False
+        resp = await client.get("/api/market-indices/cdi-monthly", headers=auth_headers)
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_usd_brl_success(client: AsyncClient, auth_headers, test_user):
     fake = AsyncMock()
     fake.get_usd_brl_ptax = AsyncMock(return_value=BCBQuote(value=Decimal("5.42"), date=date(2026, 8, 8)))

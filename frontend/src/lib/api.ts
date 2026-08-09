@@ -63,6 +63,7 @@ import type {
   GroupSettlement,
   GroupBalances,
   TransactionSplitsInput,
+  CdiMonthlyPoint,
 } from '@/types'
 
 const api = axios.create({
@@ -1182,6 +1183,12 @@ export const assets = {
 export const marketIndices = {
   cdi12m: async (): Promise<{ cdi_12m_pct: number }> => {
     const { data } = await api.get('/market-indices/cdi-12m')
+    return data
+  },
+  // Raw monthly accumulated-CDI readings, oldest first — used to build a
+  // comparison line rebased to the portfolio chart's own selected window.
+  cdiMonthly: async (months = 120): Promise<CdiMonthlyPoint[]> => {
+    const { data } = await api.get('/market-indices/cdi-monthly', { params: { months } })
     return data
   },
   usdBrl: async (): Promise<{ rate: number; as_of: string; source: string }> => {

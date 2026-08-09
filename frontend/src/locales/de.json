@@ -1133,6 +1133,7 @@
     "chartValueMode": "Diagrammansicht",
     "chartValue": "Wert",
     "chartReturn": "Rendite",
+    "chartCdi": "CDI",
     "chartPeriod": "Diagrammzeitraum",
     "periodAll": "Alle",
     "portfolioValue": "Portfoliowert",

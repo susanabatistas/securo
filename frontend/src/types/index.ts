@@ -675,6 +675,13 @@ export interface IREstimateResponse {
   disclaimer: string
 }
 
+// One BCB SGS monthly accumulated-CDI reading (%). `date` is the reading's
+// reference date (end of month), not a range.
+export interface CdiMonthlyPoint {
+  date: string
+  rate_pct: number
+}
+
 export interface B3Row {
   ticker: string
   kind: 'buy' | 'sell'

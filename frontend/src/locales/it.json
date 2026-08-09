@@ -1133,6 +1133,7 @@
     "chartValueMode": "Vista grafico",
     "chartValue": "Valore",
     "chartReturn": "Rendimento",
+    "chartCdi": "CDI",
     "chartPeriod": "Periodo del grafico",
     "periodAll": "Tutto",
     "portfolioValue": "Valore del portafoglio",

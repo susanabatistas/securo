@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from app.providers.bcb import BCBQuote, _parse_decimal, _parse_series, compound_cdi
+from app.providers.bcb import BCBQuote, _months_before, _parse_decimal, _parse_series, compound_cdi
 
 
 def test_parse_decimal_accepts_comma_and_dot():
@@ -44,3 +44,19 @@ def test_compound_cdi_compounds_not_sums():
 
 def test_compound_cdi_empty_returns_none():
     assert compound_cdi([]) is None
+
+
+def test_months_before_simple():
+    assert _months_before(date(2026, 8, 9), 1) == date(2026, 7, 9)
+    assert _months_before(date(2026, 8, 9), 12) == date(2025, 8, 9)
+
+
+def test_months_before_crosses_year_boundary():
+    assert _months_before(date(2026, 1, 15), 2) == date(2025, 11, 15)
+
+
+def test_months_before_clamps_invalid_day():
+    # Mar 31 - 1 month has no Feb 31 — clamp to Feb's actual last day.
+    assert _months_before(date(2026, 3, 31), 1) == date(2026, 2, 28)
+    # 2024 is a leap year.
+    assert _months_before(date(2024, 3, 31), 1) == date(2024, 2, 29)

@@ -1133,6 +1133,7 @@
     "chartValueMode": "Chart view",
     "chartValue": "Value",
     "chartReturn": "Return",
+    "chartCdi": "CDI",
     "chartPeriod": "Chart period",
     "periodAll": "All",
     "portfolioValue": "Portfolio Value",

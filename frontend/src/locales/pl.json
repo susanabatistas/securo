@@ -1208,6 +1208,7 @@
     "chartValueMode": "Widok wykresu",
     "chartValue": "Wartość",
     "chartReturn": "Rentowność",
+    "chartCdi": "CDI",
     "chartPeriod": "Okres wykresu",
     "periodAll": "Wszystko",
     "portfolioValue": "Wartość portfela",

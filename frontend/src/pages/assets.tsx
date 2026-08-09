@@ -25,7 +25,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DatePickerInput } from '@/components/ui/date-picker-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote } from '@/types'
+import type { Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote, CdiMonthlyPoint } from '@/types'
 import { TAX_CATEGORIES } from '@/types'
 import {
   Home,
@@ -1458,6 +1458,17 @@ export default function AssetsPage() {
     retry: false,
   })
 
+  // Monthly CDI readings for the Rendimento chart's comparison line — 120
+  // months (10y) comfortably covers any personal portfolio's history; a
+  // window that starts earlier than the oldest reading here just shows the
+  // CDI line starting later than the portfolio line instead of erroring.
+  const { data: cdiMonthly } = useQuery({
+    queryKey: ['cdi-monthly'],
+    queryFn: () => marketIndices.cdiMonthly(120),
+    staleTime: 24 * 60 * 60 * 1000,
+    retry: false,
+  })
+
   // Publish a snapshot of what's on the Assets page so the global chat
   // (⌘J) can answer "what does this chart mean / what are these
   // wallets?" without needing the user to spell it out.
@@ -1898,6 +1909,7 @@ export default function AssetsPage() {
             returnPct={portfolioReturnPct}
             returnAmount={totalGainPrimary}
             cdi12mPct={cdi12m?.cdi_12m_pct ?? null}
+            cdiMonthly={cdiMonthly ?? null}
           />
         )
       )}
@@ -2138,7 +2150,7 @@ const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6',
 // though its props (data/wallets are already useMemo'd upstream) hadn't
 // changed. Props are all primitives/memoized values, so shallow-equal
 // bailout is safe and effective.
-const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount, cdi12mPct }: {
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount, cdi12mPct, cdiMonthly }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
@@ -2157,6 +2169,10 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
   // or when the BCB integration is disabled/unreachable — "% do CDI" is
   // simply omitted in that case rather than showing a misleading 0%.
   cdi12mPct: number | null
+  // Raw monthly CDI readings (oldest first), for the Rendimento view's CDI
+  // comparison line — null while loading or when BCB is unavailable, in
+  // which case the CDI line is simply omitted from that chart.
+  cdiMonthly: CdiMonthlyPoint[] | null
 }) {
   const { t } = useTranslation()
   // Default to wallet mode: with many synced CDBs the asset view turns
@@ -2227,6 +2243,33 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
       }
     })
   }, [periodTrend])
+
+  // CDI comparison line for the Rendimento view, rebased to 0% at the same
+  // window start as `returnTrend` above so both lines start together and
+  // read as directly comparable. CDI is only published monthly, so every
+  // day within a month shares that month's cumulative index — a standard
+  // simplification when comparing a portfolio to a monthly benchmark.
+  const returnTrendWithCdi = useMemo((): (typeof returnTrend[number] & { cdi_pct?: number | null })[] => {
+    if (!cdiMonthly || cdiMonthly.length === 0 || returnTrend.length === 0) return returnTrend
+
+    const cumByMonth = new Map<string, number>()
+    let factor = 1
+    for (const q of cdiMonthly) {
+      factor *= 1 + q.rate_pct / 100
+      cumByMonth.set(q.date.slice(0, 7), factor)
+    }
+
+    const baseFactor = cumByMonth.get(returnTrend[0].date.slice(0, 7))
+    if (baseFactor == null) return returnTrend
+
+    return returnTrend.map(row => {
+      const monthFactor = cumByMonth.get(row.date.slice(0, 7))
+      return {
+        ...row,
+        cdi_pct: monthFactor != null ? (monthFactor / baseFactor - 1) * 100 : null,
+      }
+    })
+  }, [returnTrend, cdiMonthly])
 
   // Compute the series list and rewrite trend rows based on the selected
   // mode. Wallet mode rolls all assets sharing a group_id into a single
@@ -2497,7 +2540,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
       ) : (
       <div className="h-56">
         <ResponsiveContainer width="100%" height="100%">
-          <RechartsLineChart data={returnTrend} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+          <RechartsLineChart data={returnTrendWithCdi} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" strokeOpacity={0.5} />
             <XAxis
               dataKey="date"
@@ -2517,7 +2560,7 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
             <RechartsTooltip
               content={({ active, payload, label }) => {
                 if (!active || !payload?.length) return null
-                const row = returnTrend.find(r => r.date === label)
+                const row = returnTrendWithCdi.find(r => r.date === label)
                 if (!row) return null
                 return (
                   <div style={{ background: 'var(--card)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: '0.75rem', fontSize: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.08)', padding: '10px 12px' }}>
@@ -2530,6 +2573,14 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
                         {row.return_pct >= 0 ? '+' : ''}{row.return_pct.toFixed(1)}%
                       </span>
                     </div>
+                    {row.cdi_pct != null && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 2 }}>
+                        <span>{t('assets.chartCdi')}</span>
+                        <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--muted-foreground)' }}>
+                          {row.cdi_pct >= 0 ? '+' : ''}{row.cdi_pct.toFixed(1)}%
+                        </span>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
                       <span>{t('assets.total')}</span>
                       <span style={{ fontVariantNumeric: 'tabular-nums' }}>{mask(formatCurrency(row.total, currency, loc))}</span>
@@ -2547,6 +2598,19 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
               activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
               isAnimationActive={false}
             />
+            {returnTrendWithCdi.some(r => 'cdi_pct' in r) && (
+              <Line
+                type="monotone"
+                dataKey="cdi_pct"
+                stroke="var(--muted-foreground)"
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                dot={false}
+                activeDot={{ r: 3, strokeWidth: 1.5, fill: 'var(--card)' }}
+                isAnimationActive={false}
+                connectNulls
+              />
+            )}
           </RechartsLineChart>
         </ResponsiveContainer>
       </div>
@@ -2582,6 +2646,21 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
             </div>
           )
         })}
+      </div>
+      )}
+      {viewMode === 'return' && returnTrendWithCdi.some(r => 'cdi_pct' in r) && (
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 px-1">
+        <div className="flex items-center gap-1.5">
+          <div className="w-2.5 h-0.5 rounded-full" style={{ backgroundColor: 'var(--primary)' }} />
+          <span className="text-[11px] text-muted-foreground">{t('assets.chartReturn')}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="w-2.5 h-0.5 rounded-full"
+            style={{ backgroundImage: 'repeating-linear-gradient(90deg, var(--muted-foreground) 0 3px, transparent 3px 6px)' }}
+          />
+          <span className="text-[11px] text-muted-foreground">{t('assets.chartCdi')}</span>
+        </div>
       </div>
       )}
     </div>

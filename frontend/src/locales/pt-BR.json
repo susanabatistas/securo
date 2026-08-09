@@ -1133,6 +1133,7 @@
     "chartValueMode": "Modo do gráfico",
     "chartValue": "Valor",
     "chartReturn": "Rentabilidade",
+    "chartCdi": "CDI",
     "chartPeriod": "Período do gráfico",
     "periodAll": "Tudo",
     "portfolioValue": "Valor do Patrimônio",
