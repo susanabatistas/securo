@@ -29,6 +29,7 @@ from app.schemas.asset import (
     AssetTransactionUpdate,
 )
 from app.services import asset_service
+from app.services.asset_classification import resolve_asset_type
 from app.services.fx_rate_service import stamp_primary_amount
 
 logger = logging.getLogger(__name__)
@@ -368,9 +369,15 @@ async def buy_into_holding(
     data: AssetBuyCreate,
     *,
     market_provider: Optional[MarketPriceProvider] = None,
+    source: str = "manual",
 ) -> AssetRead:
     """Record a buy, consolidating onto the existing ticker holding in the
-    chosen wallet (`group_id`) or creating a new market-priced holding."""
+    chosen wallet (`group_id`) or creating a new market-priced holding.
+
+    `source` tags the transaction row (manual/import/...) — callers like the
+    B3 importer pass "import" so it's distinguishable from a hand-entered
+    buy; it never affects the find-or-create/consolidation logic itself.
+    """
     _validate("buy", data.quantity, data.price)
     ticker = data.ticker.upper()
 
@@ -396,7 +403,7 @@ async def buy_into_holding(
             user_id=user_id,
             workspace_id=workspace_id,
             name=data.name or quote.name or ticker,
-            type=_type_from_quote(quote.quote_type),
+            type=resolve_asset_type(ticker, quote.quote_type),
             currency=quote.currency,
             valuation_method="market_price",
             group_id=data.group_id,
@@ -419,7 +426,7 @@ async def buy_into_holding(
             price=data.price,
             fee=data.fee or Decimal("0"),
             date=data.date,
-            source="manual",
+            source=source,
             notes=data.notes,
         )
     )
@@ -432,14 +439,55 @@ async def buy_into_holding(
     return result
 
 
-def _type_from_quote(quote_type: Optional[str]) -> str:
-    """Mirror the frontend's quoteType → asset type mapping so a holding
-    created from the ledger lands on a sensible icon/type."""
-    mapping = {
-        "EQUITY": "stock",
-        "ETF": "etf",
-        "CRYPTOCURRENCY": "crypto",
-        "MUTUALFUND": "fund",
-        "INDEX": "fund",
-    }
-    return mapping.get((quote_type or "").upper(), "investment")
+async def sell_from_holding(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    ticker: str,
+    group_id: Optional[uuid.UUID],
+    quantity: Decimal,
+    price: Decimal,
+    date_: date,
+    *,
+    fee: Decimal = Decimal("0"),
+    notes: Optional[str] = None,
+    source: str = "manual",
+) -> Optional[AssetRead]:
+    """Record a sell against an existing ticker holding — unlike
+    `buy_into_holding`, this never creates a new asset: a sell with no
+    matching holding returns None so the caller (the B3 importer) can report
+    it as an unresolved row instead of fabricating a position out of thin
+    air. Raises HTTPException on oversell, same as `add_transaction`.
+    """
+    _validate("sell", quantity, price)
+    ticker = ticker.upper()
+
+    result = await session.execute(
+        select(Asset).where(
+            Asset.workspace_id == workspace_id,
+            Asset.ticker == ticker,
+            Asset.valuation_method == "market_price",
+            Asset.group_id == group_id,
+        )
+    )
+    asset = result.scalar_one_or_none()
+    if asset is None:
+        return None
+
+    new_tx = AssetTransaction(
+        asset_id=asset.id,
+        workspace_id=workspace_id,
+        kind="sell",
+        quantity=quantity,
+        price=price,
+        fee=fee,
+        date=date_,
+        source=source,
+        notes=notes,
+        created_at=datetime.now(timezone.utc),
+    )
+    _raise_if_oversell(await _load_txs(session, asset.id) + [new_tx])
+    session.add(new_tx)
+    await session.flush()
+    await recompute_and_cache(session, asset)
+    await session.commit()
+    return await asset_service.get_asset(session, asset.id, workspace_id)

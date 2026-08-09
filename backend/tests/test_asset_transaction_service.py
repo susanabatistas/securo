@@ -355,6 +355,20 @@ async def test_buy_into_holding_separate_across_wallets(session, test_workspace,
 
 
 @pytest.mark.asyncio
+async def test_buy_into_holding_applies_br_ticker_type_override(session, test_workspace, test_user):
+    # Yahoo reports Brazilian FIIs as EQUITY (same quote_type as a stock);
+    # buy_into_holding must apply the same static override the manual
+    # "add asset" flow uses, not fall back to `stock`.
+    provider = _FakeProvider({"HGLG11.SA": _quote("HGLG11.SA", 160.0)})
+    created = await asset_transaction_service.buy_into_holding(
+        session, test_workspace.id, test_user.id,
+        AssetBuyCreate(ticker="HGLG11.SA", quantity=Decimal("10"), price=Decimal("155"), date=date(2026, 1, 1)),
+        market_provider=provider,
+    )
+    assert created.type == "fund"
+
+
+@pytest.mark.asyncio
 async def test_buy_into_holding_consolidates_by_ticker(session, test_workspace, test_user):
     provider = _FakeProvider({"VALE3.SA": _quote("VALE3.SA", 60.0)})
     first = await asset_transaction_service.buy_into_holding(
@@ -380,3 +394,48 @@ async def test_buy_into_holding_consolidates_by_ticker(session, test_workspace, 
         )
     ).scalars().all()
     assert len(all_vale) == 1
+
+
+@pytest.mark.asyncio
+async def test_sell_from_holding_returns_none_when_no_matching_holding(session, test_workspace, test_user):
+    result = await asset_transaction_service.sell_from_holding(
+        session, test_workspace.id, "NOHOLDING4.SA", None,
+        Decimal("10"), Decimal("50"), date(2026, 1, 1),
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_sell_from_holding_against_existing_position(session, test_workspace, test_user):
+    provider = _FakeProvider({"ITSA4.SA": _quote("ITSA4.SA", 10.0)})
+    bought = await asset_transaction_service.buy_into_holding(
+        session, test_workspace.id, test_user.id,
+        AssetBuyCreate(ticker="ITSA4.SA", quantity=Decimal("100"), price=Decimal("9"), date=date(2026, 1, 1)),
+        market_provider=provider,
+    )
+    sold = await asset_transaction_service.sell_from_holding(
+        session, test_workspace.id, "ITSA4.SA", None,
+        Decimal("40"), Decimal("12"), date(2026, 2, 1), source="import",
+    )
+    assert sold is not None
+    assert sold.id == bought.id
+    assert sold.units == 60
+    assert sold.realized_gain is not None
+    assert round(sold.realized_gain, 2) == round((12 - 9) * 40, 2)
+
+
+@pytest.mark.asyncio
+async def test_sell_from_holding_rejects_oversell(session, test_workspace, test_user):
+    from fastapi import HTTPException
+
+    provider = _FakeProvider({"BBAS3.SA": _quote("BBAS3.SA", 20.0)})
+    await asset_transaction_service.buy_into_holding(
+        session, test_workspace.id, test_user.id,
+        AssetBuyCreate(ticker="BBAS3.SA", quantity=Decimal("10"), price=Decimal("18"), date=date(2026, 1, 1)),
+        market_provider=provider,
+    )
+    with pytest.raises(HTTPException):
+        await asset_transaction_service.sell_from_holding(
+            session, test_workspace.id, "BBAS3.SA", None,
+            Decimal("50"), Decimal("20"), date(2026, 2, 1),
+        )
