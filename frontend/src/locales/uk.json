@@ -1212,6 +1212,9 @@
       "outro": "Інше"
     },
     "incomeTotalYear": "Разом за рік",
+    "incomeViewMonthly": "По місяцях",
+    "incomeViewYearly": "По роках",
+    "incomeTotalAll": "Загальна сума",
     "addIncome": "Додати виплату",
     "incomeEmpty": "Немає виплат за цей рік.",
     "incomeSource": {

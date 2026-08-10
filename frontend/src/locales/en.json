@@ -1212,6 +1212,9 @@
       "outro": "Other"
     },
     "incomeTotalYear": "Total this year",
+    "incomeViewMonthly": "Monthly",
+    "incomeViewYearly": "Yearly",
+    "incomeTotalAll": "All-time total",
     "addIncome": "Add provento",
     "incomeEmpty": "No proventos logged for this year.",
     "incomeSource": {

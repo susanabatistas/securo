@@ -1212,6 +1212,9 @@
       "outro": "Andere"
     },
     "incomeTotalYear": "Summe dieses Jahr",
+    "incomeViewMonthly": "Monatlich",
+    "incomeViewYearly": "Jährlich",
+    "incomeTotalAll": "Gesamtsumme",
     "addIncome": "Ausschüttung hinzufügen",
     "incomeEmpty": "Keine Ausschüttungen in diesem Jahr.",
     "incomeSource": {

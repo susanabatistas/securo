@@ -1287,6 +1287,9 @@
       "outro": "Inne"
     },
     "incomeTotalYear": "Suma w tym roku",
+    "incomeViewMonthly": "Miesięcznie",
+    "incomeViewYearly": "Rocznie",
+    "incomeTotalAll": "Suma ogółem",
     "addIncome": "Dodaj wypłatę",
     "incomeEmpty": "Brak wypłat w tym roku.",
     "incomeSource": {

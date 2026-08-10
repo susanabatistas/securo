@@ -1212,6 +1212,9 @@
       "outro": "Autre"
     },
     "incomeTotalYear": "Total de l'année",
+    "incomeViewMonthly": "Mensuel",
+    "incomeViewYearly": "Annuel",
+    "incomeTotalAll": "Total général",
     "addIncome": "Ajouter un dividende",
     "incomeEmpty": "Aucun dividende enregistré cette année.",
     "incomeSource": {

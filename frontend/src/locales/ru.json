@@ -1212,6 +1212,9 @@
       "outro": "Другое"
     },
     "incomeTotalYear": "Итого за год",
+    "incomeViewMonthly": "По месяцам",
+    "incomeViewYearly": "По годам",
+    "incomeTotalAll": "Общая сумма",
     "addIncome": "Добавить выплату",
     "incomeEmpty": "Нет выплат за этот год.",
     "incomeSource": {

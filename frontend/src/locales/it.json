@@ -1212,6 +1212,9 @@
       "outro": "Altro"
     },
     "incomeTotalYear": "Totale annuale",
+    "incomeViewMonthly": "Mensile",
+    "incomeViewYearly": "Annuale",
+    "incomeTotalAll": "Totale generale",
     "addIncome": "Aggiungi provento",
     "incomeEmpty": "Nessun provento registrato quest'anno.",
     "incomeSource": {

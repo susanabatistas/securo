@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { assets as assetsApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Badge } from '@/components/ui/badge'
@@ -46,6 +47,7 @@ export function AssetIncomeTab({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [year, setYear] = useState<number>(new Date().getFullYear())
+  const [viewMode, setViewMode] = useState<'monthly' | 'yearly'>('monthly')
   const [addOpen, setAddOpen] = useState(false)
 
   const { data: allSummary } = useQuery({
@@ -86,6 +88,24 @@ export function AssetIncomeTab({
 
   const yearTotal = chartData.reduce((acc, m) => acc + m.total, 0)
 
+  // One bar per year (every year with data, not just the ones in `years`
+  // above — that list also gets the currently-selected empty year mixed
+  // in). Sorted ascending so the chart reads left-to-right as a timeline.
+  const yearlyData = useMemo(() => {
+    const byYear = new Map<string, number>()
+    for (const m of allSummary?.months ?? []) {
+      const y = m.month.slice(0, 4)
+      byYear.set(y, (byYear.get(y) ?? 0) + m.total)
+    }
+    return Array.from(byYear.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([y, total]) => ({ month: y, total }))
+  }, [allSummary])
+
+  const yearlyTotal = yearlyData.reduce((acc, m) => acc + m.total, 0)
+  const activeChartData = viewMode === 'monthly' ? chartData : yearlyData
+  const activeTotal = viewMode === 'monthly' ? yearTotal : yearlyTotal
+
   const tooltipStyle = {
     background: 'var(--card)',
     color: 'var(--foreground)',
@@ -110,23 +130,49 @@ export function AssetIncomeTab({
             </SelectContent>
           </Select>
           <div>
-            <span className="text-xs text-muted-foreground">{t('assets.incomeTotalYear')}</span>
+            <span className="text-xs text-muted-foreground">
+              {viewMode === 'monthly' ? t('assets.incomeTotalYear') : t('assets.incomeTotalAll')}
+            </span>
             <p className="text-lg font-bold tabular-nums text-foreground">
-              {mask(formatCurrency(yearTotal, userCurrency, locale))}
+              {mask(formatCurrency(activeTotal, userCurrency, locale))}
             </p>
           </div>
         </div>
-        {canWrite && (
-          <Button onClick={() => setAddOpen(true)} className="gap-1.5">
-            <Plus size={16} />
-            {t('assets.addIncome')}
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border border-input p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('monthly')}
+              className={cn(
+                'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'monthly' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('assets.incomeViewMonthly')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('yearly')}
+              className={cn(
+                'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                viewMode === 'yearly' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t('assets.incomeViewYearly')}
+            </button>
+          </div>
+          {canWrite && (
+            <Button onClick={() => setAddOpen(true)} className="gap-1.5">
+              <Plus size={16} />
+              {t('assets.addIncome')}
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="h-56 rounded-lg border border-border p-3">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <BarChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
             <XAxis
               dataKey="month"
