@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Sovrascrivi:",
     "checklistAuto": "Automatico",
     "checklistOverrideSaved": "Sovrascrittura del checklist salvata",
-    "pctOfCdi": "{{pct}}% del CDI (12m)",
     "irEstimateButton": "Stima imposte",
     "irEstimateTitle": "Imposta stimata (regole BR)",
     "irEstimateDisclaimerFallback": "Solo una stima, non è consulenza fiscale.",

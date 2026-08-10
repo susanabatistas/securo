@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Substituir:",
     "checklistAuto": "Automático",
     "checklistOverrideSaved": "Substituição do checklist salva",
-    "pctOfCdi": "{{pct}}% do CDI 12m",
     "irEstimateButton": "Estimador de IR",
     "irEstimateTitle": "Imposto de Renda estimado",
     "irEstimateDisclaimerFallback": "Apenas uma estimativa, não é orientação fiscal.",

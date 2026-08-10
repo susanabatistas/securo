@@ -1237,7 +1237,6 @@
     "checklistManualOverride": "Zastąp:",
     "checklistAuto": "Automatyczny",
     "checklistOverrideSaved": "Zapisano ręczne zastąpienie listy kontrolnej",
-    "pctOfCdi": "{{pct}}% CDI (12m)",
     "irEstimateButton": "Szacowanie podatku",
     "irEstimateTitle": "Szacowany podatek (zasady BR)",
     "irEstimateDisclaimerFallback": "Tylko szacunek, nie porada podatkowa.",

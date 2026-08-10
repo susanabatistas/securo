@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Remplacer :",
     "checklistAuto": "Automatique",
     "checklistOverrideSaved": "Remplacement de la checklist enregistré",
-    "pctOfCdi": "{{pct}}% du CDI (12m)",
     "irEstimateButton": "Estimation d'impôt",
     "irEstimateTitle": "Impôt estimé (règles BR)",
     "irEstimateDisclaimerFallback": "Simple estimation, pas un conseil fiscal.",

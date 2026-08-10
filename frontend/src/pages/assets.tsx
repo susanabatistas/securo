@@ -1494,19 +1494,6 @@ export default function AssetsPage() {
   }, [activeAssets])
   const portfolioReturnPct = totalInvestedPrimary > 0 ? (totalGainPrimary / totalInvestedPrimary) * 100 : null
 
-  // Trailing 12-month accumulated CDI, for the "% do CDI" comparison next to
-  // the portfolio return. It's an official BCB rate published once per
-  // business day (same TTL as the backend's own cache of it, see
-  // app/providers/bcb.py) — a 24h staleTime never shows a stale reading
-  // within the day and avoids re-fetching this secondary reference number
-  // on every mount.
-  const { data: cdi12m } = useQuery({
-    queryKey: ['cdi-12m'],
-    queryFn: () => marketIndices.cdi12m(),
-    staleTime: 24 * 60 * 60 * 1000,
-    retry: false,
-  })
-
   // Monthly CDI readings for the Rendimento chart's comparison line — 120
   // months (10y) comfortably covers any personal portfolio's history; a
   // window that starts earlier than the oldest reading here just shows the
@@ -1984,7 +1971,6 @@ export default function AssetsPage() {
             onWalletClick={onWalletClick}
             returnPct={portfolioReturnPct}
             returnAmount={totalGainPrimary}
-            cdi12mPct={cdi12m?.cdi_12m_pct ?? null}
             cdiMonthly={cdiMonthly ?? null}
           />
         )
@@ -2239,7 +2225,7 @@ const PORTFOLIO_COLORS = ['#6366F1', '#F43F5E', '#F59E0B', '#10B981', '#8B5CF6',
 // though its props (data/wallets are already useMemo'd upstream) hadn't
 // changed. Props are all primitives/memoized values, so shallow-equal
 // bailout is safe and effective.
-const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount, cdi12mPct, cdiMonthly }: {
+const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, locale: loc, dateLocale: dateLoc, mask, focusedWalletId, onWalletClick, returnPct, returnAmount, cdiMonthly }: {
   data: { assets: { id: string; name: string; type: string; group_id: string | null }[]; trend: Record<string, unknown>[]; total: number }
   wallets: AssetGroup[]
   currency: string
@@ -2254,10 +2240,6 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
   // assets with a known purchase price — null when no asset has one.
   returnPct: number | null
   returnAmount: number
-  // Trailing 12-month accumulated CDI (%), from BCB SGS. Null while loading
-  // or when the BCB integration is disabled/unreachable — "% do CDI" is
-  // simply omitted in that case rather than showing a misleading 0%.
-  cdi12mPct: number | null
   // Raw monthly CDI readings (oldest first), for the Rendimento view's CDI
   // comparison line — null while loading or when BCB is unavailable, in
   // which case the CDI line is simply omitted from that chart.
@@ -2530,11 +2512,6 @@ const PortfolioChart = memo(function PortfolioChart({ data, wallets, currency, l
           {returnPct != null && (
             <p className={`text-xs font-medium tabular-nums ${returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}`}>
               {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}% ({mask(formatCurrency(returnAmount, currency, loc))})
-            </p>
-          )}
-          {returnPct != null && cdi12mPct != null && cdi12mPct > 0 && (
-            <p className="text-[11px] text-muted-foreground tabular-nums">
-              {t('assets.pctOfCdi', { pct: ((returnPct / cdi12mPct) * 100).toFixed(0) })}
             </p>
           )}
         </div>

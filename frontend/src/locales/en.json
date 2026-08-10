@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Override:",
     "checklistAuto": "Automatic",
     "checklistOverrideSaved": "Checklist override saved",
-    "pctOfCdi": "{{pct}}% of the 12-month CDI",
     "irEstimateButton": "Tax estimate",
     "irEstimateTitle": "Estimated income tax (IR)",
     "irEstimateDisclaimerFallback": "Estimate only, not tax advice.",

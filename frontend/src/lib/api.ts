@@ -1181,10 +1181,6 @@ export const assets = {
 
 // Market indices (BCB) — CDI acumulado and USD/BRL PTAX, no key required.
 export const marketIndices = {
-  cdi12m: async (): Promise<{ cdi_12m_pct: number }> => {
-    const { data } = await api.get('/market-indices/cdi-12m')
-    return data
-  },
   // Raw monthly accumulated-CDI readings, oldest first — used to build a
   // comparison line rebased to the portfolio chart's own selected window.
   cdiMonthly: async (months = 120): Promise<CdiMonthlyPoint[]> => {

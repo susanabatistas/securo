@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Anular:",
     "checklistAuto": "Automático",
     "checklistOverrideSaved": "Anulación del checklist guardada",
-    "pctOfCdi": "{{pct}}% del CDI (12m)",
     "irEstimateButton": "Estimador de impuestos",
     "irEstimateTitle": "Impuesto estimado (reglas BR)",
     "irEstimateDisclaimerFallback": "Solo una estimación, no es asesoría fiscal.",

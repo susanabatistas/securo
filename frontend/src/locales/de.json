@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Überschreiben:",
     "checklistAuto": "Automatisch",
     "checklistOverrideSaved": "Checklisten-Überschreibung gespeichert",
-    "pctOfCdi": "{{pct}}% der CDI (12M)",
     "irEstimateButton": "Steuerschätzung",
     "irEstimateTitle": "Geschätzte Steuer (BR-Regeln)",
     "irEstimateDisclaimerFallback": "Nur eine Schätzung, keine Steuerberatung.",

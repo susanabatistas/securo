@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Перевизначити:",
     "checklistAuto": "Автоматично",
     "checklistOverrideSaved": "Перевизначення чек-листа збережено",
-    "pctOfCdi": "{{pct}}% від CDI (12м)",
     "irEstimateButton": "Оцінка податку",
     "irEstimateTitle": "Оцінка податку (правила BR)",
     "irEstimateDisclaimerFallback": "Лише оцінка, не податкова консультація.",

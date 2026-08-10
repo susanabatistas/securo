@@ -1162,7 +1162,6 @@
     "checklistManualOverride": "Переопределить:",
     "checklistAuto": "Автоматически",
     "checklistOverrideSaved": "Переопределение чек-листа сохранено",
-    "pctOfCdi": "{{pct}}% от CDI (12м)",
     "irEstimateButton": "Оценка налога",
     "irEstimateTitle": "Оценка налога (правила BR)",
     "irEstimateDisclaimerFallback": "Только оценка, не налоговая консультация.",
