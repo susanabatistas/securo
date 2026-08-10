@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Prix moyen",
     "colCurrentPrice": "Actuel",
     "colReturn": "Rendement",
+    "colReturnTooltip": "Inclut les dividendes reçus",
     "colBalance": "Total",
     "colPortfolioPct": "% portef.",
     "addBuys": "ajouter des achats",

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.asset import Asset
+from app.models.asset_income import AssetIncome
 from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
 from app.models.fx_rate import FxRate
@@ -122,6 +123,7 @@ def _asset_to_read(
     latest_value: Optional[AssetValue],
     value_count: int,
     transaction_count: int = 0,
+    income_total: Optional[float] = None,
 ) -> AssetRead:
     """Convert an Asset model + computed fields to AssetRead schema."""
     current_value = _compute_current_value(asset, latest_value)
@@ -180,6 +182,7 @@ def _asset_to_read(
         purchase_price_primary=(
             float(asset.purchase_price_primary) if asset.purchase_price_primary is not None else None
         ),
+        income_total=income_total,
     )
 
 
@@ -524,6 +527,23 @@ async def _bulk_value_counts(
     return {row[0]: row[1] for row in result.all()}
 
 
+async def _bulk_income_totals(
+    session: AsyncSession, asset_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, float]:
+    """Sum of all AssetIncome (proventos) ever received per asset, in the
+    asset's own currency — same basis as `gain_loss`/`total_invested`, so
+    the two can be added directly for a total-return figure without an FX
+    conversion. One grouped query, avoiding an N+1 per asset."""
+    if not asset_ids:
+        return {}
+    result = await session.execute(
+        select(AssetIncome.asset_id, func.sum(AssetIncome.amount))
+        .where(AssetIncome.asset_id.in_(asset_ids))
+        .group_by(AssetIncome.asset_id)
+    )
+    return {row[0]: float(row[1]) for row in result.all()}
+
+
 async def get_assets(
     session: AsyncSession, workspace_id: uuid.UUID, include_archived: bool = False
 ) -> list[AssetRead]:
@@ -540,6 +560,7 @@ async def get_assets(
     tx_counts = await _get_transaction_counts(session, workspace_id)
     latest_values = await _bulk_latest_values(session, asset_ids)
     value_counts = await _bulk_value_counts(session, asset_ids)
+    income_totals = await _bulk_income_totals(session, asset_ids)
 
     return [
         _asset_to_read(
@@ -547,6 +568,7 @@ async def get_assets(
             latest_values.get(asset.id),
             value_counts.get(asset.id, 0),
             tx_counts.get(asset.id, 0),
+            income_totals.get(asset.id),
         )
         for asset in assets
     ]
@@ -569,7 +591,8 @@ async def get_asset(
         .select_from(AssetTransaction)
         .where(AssetTransaction.asset_id == asset.id)
     )
-    return _asset_to_read(asset, latest, count, tx_count or 0)
+    income_total = (await _bulk_income_totals(session, [asset.id])).get(asset.id)
+    return _asset_to_read(asset, latest, count, tx_count or 0, income_total)
 
 
 async def create_asset(
@@ -823,7 +846,8 @@ async def update_asset(
     await session.refresh(asset)
     latest = await _get_latest_value(session, asset.id)
     count = await _get_value_count(session, asset.id)
-    return _asset_to_read(asset, latest, count)
+    income_total = (await _bulk_income_totals(session, [asset.id])).get(asset.id)
+    return _asset_to_read(asset, latest, count, income_total=income_total)
 
 
 async def delete_asset(

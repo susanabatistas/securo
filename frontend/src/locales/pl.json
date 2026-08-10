@@ -1082,6 +1082,7 @@
     "colAvgPrice": "Śr. cena",
     "colCurrentPrice": "Aktualna",
     "colReturn": "Zwrot",
+    "colReturnTooltip": "Zawiera otrzymane dywidendy",
     "colBalance": "Saldo",
     "colPortfolioPct": "% portfela",
     "addBuys": "dodaj zakupy",

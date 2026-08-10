@@ -109,6 +109,12 @@ class AssetRead(BaseModel):
     total_invested: Optional[float] = None
     realized_gain: Optional[float] = None
     transaction_count: int = 0
+    # Sum of all proventos (dividends/JCP/rendimentos) ever received for this
+    # asset, in the asset's own currency — same basis as gain_loss/
+    # total_invested, so the return % shown in the holdings table can fold
+    # income in alongside price appreciation. None (not 0) when no income
+    # rows exist, distinguishing "never received any" from "received R$0".
+    income_total: Optional[float] = None
     # Raw manual override of the stock checklist verdict, or None if unset —
     # the computed verdict itself comes from GET /assets/{id}/stock-checklist.
     stock_checklist_status: Optional[str] = None

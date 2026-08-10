@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Preço médio",
     "colCurrentPrice": "Preço atual",
     "colReturn": "Rentab.",
+    "colReturnTooltip": "Inclui proventos recebidos",
     "colBalance": "Saldo",
     "colPortfolioPct": "% carteira",
     "addBuys": "add compras",

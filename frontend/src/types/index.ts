@@ -616,6 +616,10 @@ export interface Asset {
   total_invested: number | null
   realized_gain: number | null
   transaction_count: number
+  // Sum of all proventos (dividends/JCP/rendimentos) ever received, in the
+  // asset's own currency — same basis as gain_loss/total_invested. Null
+  // when no income rows exist.
+  income_total: number | null
   // Manual override of the stock checklist verdict, or null if unset.
   stock_checklist_status: StockChecklistStatus | null
   // Resolved IR-estimator bucket: override, computed default, or null when

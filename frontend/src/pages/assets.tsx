@@ -50,6 +50,7 @@ import {
   AlertTriangle,
   Receipt,
   Upload,
+  Info,
 } from 'lucide-react'
 import {
   AreaChart,
@@ -321,9 +322,12 @@ const HoldingRow = memo(function HoldingRow({
   const isMarketPriced = asset.valuation_method === 'market_price'
   const isProviderOwned = isSynced && !isMarketPriced
   const hasCost = asset.average_price != null && asset.total_invested != null
+  // Total return: price appreciation (gain_loss) plus proventos received
+  // (income_total), both already in the asset's own currency — same basis
+  // as total_invested, so no FX conversion is needed to combine them.
   const returnPct =
     hasCost && asset.gain_loss != null && asset.total_invested
-      ? (asset.gain_loss / asset.total_invested) * 100
+      ? ((asset.gain_loss + (asset.income_total ?? 0)) / asset.total_invested) * 100
       : null
   const pctOfPortfolio =
     portfolioTotalPrimary > 0 && asset.current_value_primary != null
@@ -1652,7 +1656,12 @@ export default function AssetsPage() {
         <div className="text-right">{t('assets.colQuantity')}</div>
         <div className="text-right">{t('assets.colAvgPrice')}</div>
         <div className="text-right">{t('assets.colCurrentPrice')}</div>
-        <div className="text-right">{t('assets.colReturn')}</div>
+        <div className="flex items-center justify-end gap-1">
+          {t('assets.colReturn')}
+          <span title={t('assets.colReturnTooltip')}>
+            <Info size={11} className="inline opacity-60" />
+          </span>
+        </div>
         <div className="text-right">{t('assets.colBalance')}</div>
         <div className="text-right">{t('assets.colPortfolioPct')}</div>
         <div />

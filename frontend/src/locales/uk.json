@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Середня ціна",
     "colCurrentPrice": "Поточна",
     "colReturn": "Дохідність",
+    "colReturnTooltip": "Включає отримані дивіденди",
     "colBalance": "Усього",
     "colPortfolioPct": "% порт.",
     "addBuys": "додати купівлі",

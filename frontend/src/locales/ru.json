@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Средняя цена",
     "colCurrentPrice": "Текущая",
     "colReturn": "Доходность",
+    "colReturnTooltip": "Включает полученные дивиденды",
     "colBalance": "Итого",
     "colPortfolioPct": "% порт.",
     "addBuys": "добавить покупки",

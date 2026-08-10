@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Avg price",
     "colCurrentPrice": "Current",
     "colReturn": "Return",
+    "colReturnTooltip": "Includes proventos received",
     "colBalance": "Total",
     "colPortfolioPct": "% port.",
     "addBuys": "add buys",

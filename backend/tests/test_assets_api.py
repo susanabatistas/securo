@@ -144,6 +144,41 @@ async def test_get_asset_defaults_target_pct_to_none(client: AsyncClient, auth_h
 
 
 @pytest.mark.asyncio
+async def test_get_asset_defaults_income_total_to_none(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
+    response = await client.get(f"/api/assets/{test_asset_api.id}", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["income_total"] is None
+
+
+@pytest.mark.asyncio
+async def test_asset_income_total_sums_all_proventos(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
+    """income_total (used by the frontend to fold proventos into the
+    holdings-table return %) should sum every income row for the asset,
+    regardless of kind, and show up both on the single-asset GET and the
+    list endpoint (the two code paths that compute it, see
+    asset_service._bulk_income_totals / get_asset)."""
+    for kind, amount, d in [
+        ("dividendo", "12.50", "2026-01-15"),
+        ("jcp", "3.25", "2026-02-10"),
+    ]:
+        resp = await client.post(
+            f"/api/assets/{test_asset_api.id}/income",
+            headers=auth_headers,
+            json={"kind": kind, "amount": amount, "date": d},
+        )
+        assert resp.status_code == 201, resp.text
+
+    single = await client.get(f"/api/assets/{test_asset_api.id}", headers=auth_headers)
+    assert single.status_code == 200
+    assert single.json()["income_total"] == pytest.approx(15.75)
+
+    listing = await client.get("/api/assets", headers=auth_headers)
+    assert listing.status_code == 200
+    row = next(a for a in listing.json() if a["id"] == str(test_asset_api.id))
+    assert row["income_total"] == pytest.approx(15.75)
+
+
+@pytest.mark.asyncio
 async def test_delete_asset(client: AsyncClient, auth_headers: dict, session: AsyncSession, test_user: User):
     asset = Asset(
         id=uuid.uuid4(),

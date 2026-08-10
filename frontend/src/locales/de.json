@@ -1007,6 +1007,7 @@
     "colAvgPrice": "Einstandspreis",
     "colCurrentPrice": "Aktuell",
     "colReturn": "Rendite",
+    "colReturnTooltip": "Enthält erhaltene Dividenden",
     "colBalance": "Wert",
     "colPortfolioPct": "% Port.",
     "addBuys": "Käufe hinzufügen",
