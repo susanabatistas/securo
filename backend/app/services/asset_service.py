@@ -176,6 +176,7 @@ def _asset_to_read(
         transaction_count=transaction_count,
         stock_checklist_status=asset.stock_checklist_status,
         tax_category=resolve_tax_category(asset.type, asset.tax_category, asset.ticker),
+        target_pct=float(asset.target_pct) if asset.target_pct is not None else None,
         purchase_price_primary=(
             float(asset.purchase_price_primary) if asset.purchase_price_primary is not None else None
         ),
@@ -626,6 +627,8 @@ async def create_asset(
         is_archived=data.is_archived,
         position=data.position,
         group_id=data.group_id,
+        target_pct=data.target_pct,
+        tax_category=data.tax_category,
         ticker=data.ticker.upper() if data.ticker else None,
         ticker_exchange=data.ticker_exchange or (quote.exchange if quote else None),
         last_price=Decimal(str(quote.price)) if quote else None,

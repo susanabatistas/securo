@@ -84,6 +84,24 @@ async def test_create_asset(client: AsyncClient, auth_headers: dict):
 
 
 @pytest.mark.asyncio
+async def test_create_asset_with_target_pct(client: AsyncClient, auth_headers: dict):
+    response = await client.post("/api/assets", headers=auth_headers, json={
+        "name": "ETF A", "type": "etf", "currency": "USD", "target_pct": 50,
+    })
+    assert response.status_code == 201, response.text
+    assert response.json()["target_pct"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_create_asset_with_tax_category(client: AsyncClient, auth_headers: dict):
+    response = await client.post("/api/assets", headers=auth_headers, json={
+        "name": "CDB Bank X", "type": "stock", "currency": "BRL", "tax_category": "renda_fixa",
+    })
+    assert response.status_code == 201, response.text
+    assert response.json()["tax_category"] == "renda_fixa"
+
+
+@pytest.mark.asyncio
 async def test_update_asset(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
     response = await client.patch(
         f"/api/assets/{test_asset_api.id}",
@@ -92,6 +110,37 @@ async def test_update_asset(client: AsyncClient, auth_headers: dict, test_asset_
     )
     assert response.status_code == 200
     assert response.json()["name"] == "Updated House"
+
+
+@pytest.mark.asyncio
+async def test_update_asset_sets_target_pct(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
+    response = await client.patch(
+        f"/api/assets/{test_asset_api.id}",
+        headers=auth_headers,
+        json={"target_pct": 50},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["target_pct"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_update_asset_clears_target_pct(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
+    await client.patch(f"/api/assets/{test_asset_api.id}", headers=auth_headers, json={"target_pct": 50})
+
+    response = await client.patch(
+        f"/api/assets/{test_asset_api.id}",
+        headers=auth_headers,
+        json={"target_pct": None},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["target_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_asset_defaults_target_pct_to_none(client: AsyncClient, auth_headers: dict, test_asset_api: Asset):
+    response = await client.get(f"/api/assets/{test_asset_api.id}", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["target_pct"] is None
 
 
 @pytest.mark.asyncio

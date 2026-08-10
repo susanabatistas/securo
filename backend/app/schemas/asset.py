@@ -34,6 +34,9 @@ class AssetCreate(BaseModel):
     # service seeds the buy at the live quote ("bought at market now").
     unit_price: Optional[Decimal] = None
     tax_category: Optional[str] = None  # renda_fixa, fii, acoes_etfs_cripto
+    # Rebalancing target — this asset's target share (%) of its own wallet
+    # (group_id), not of the total portfolio. Meaningless without a group.
+    target_pct: Optional[Decimal] = None
 
 
 class AssetUpdate(BaseModel):
@@ -62,6 +65,7 @@ class AssetUpdate(BaseModel):
     # the override and falls back to the computed result.
     stock_checklist_status: Optional[str] = None
     tax_category: Optional[str] = None
+    target_pct: Optional[Decimal] = None
 
 
 class AssetRead(BaseModel):
@@ -113,6 +117,10 @@ class AssetRead(BaseModel):
     # asset (real_estate/vehicle/valuable/other) — None here is a legitimate
     # resolved state, not "unset".
     tax_category: Optional[str] = None
+    # Rebalancing target — this asset's target share (%) of its own wallet,
+    # not of the total portfolio. None = no target set, or the asset has no
+    # wallet (group_id) for the % to be relative to.
+    target_pct: Optional[float] = None
     # Cost basis converted to the user's primary currency at the *purchase*
     # FX rate (not today's) — already computed/cached by
     # asset_service/asset_transaction_service, just not surfaced until now.

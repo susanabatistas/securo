@@ -91,6 +91,11 @@ class Asset(Base):
     # Manual override of the IR estimator's tax bucket. NULL means "use the
     # default derived from type+ticker" or "not applicable" for non-securities.
     tax_category: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # renda_fixa, fii, acoes_etfs_cripto
+    # Rebalancing target — this asset's target share (%) of its *own
+    # wallet* (group_id), not of the total portfolio. Meaningless without a
+    # group_id; never validated at the DB level, just ignored by the
+    # rebalance calculation for ungrouped assets. NULL = no target set.
+    target_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2), nullable=True)
 
     values: Mapped[list["AssetValue"]] = relationship(back_populates="asset", cascade="all, delete-orphan")
     transactions: Mapped[list["AssetTransaction"]] = relationship(

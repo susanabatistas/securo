@@ -9,6 +9,9 @@ class AssetGroupBase(BaseModel):
     icon: str = "wallet"
     color: str = "#0EA5E9"
     position: int = 0
+    # Rebalancing target — this wallet's target share (%) of the total
+    # portfolio. None = no target set.
+    target_pct: Optional[float] = None
 
 
 class AssetGroupCreate(AssetGroupBase):
@@ -20,6 +23,7 @@ class AssetGroupUpdate(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     position: Optional[int] = None
+    target_pct: Optional[float] = None
 
 
 class AssetGroupRead(AssetGroupBase):

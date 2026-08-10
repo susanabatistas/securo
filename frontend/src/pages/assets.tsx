@@ -10,6 +10,7 @@ import { StockChecklistSection } from '@/components/assets/stock-checklist-secti
 import { IREstimateDialog } from '@/components/assets/ir-estimate-dialog'
 import { B3ImportDialog } from '@/components/assets/b3-import-dialog'
 import { AssetIncomeTab } from '@/components/assets/asset-income-tab'
+import { RebalanceWidget } from '@/components/assets/rebalance-widget'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -518,6 +519,11 @@ const AssetDialog = memo(function AssetDialog({
   // override (only unset vs. one of the 3 categories).
   const [formTaxCategory, setFormTaxCategory] = useState<string>('__auto__')
   const [formTaxCategoryTouched, setFormTaxCategoryTouched] = useState(false)
+  // Rebalancing target — this asset's target share (%) of its own wallet
+  // (formGroupId), not of the total portfolio. Only meaningful (and only
+  // shown) once a wallet is selected. String state for the same reason as
+  // walletFormTargetPct: '' must mean "no target", not 0.
+  const [formTargetPct, setFormTargetPct] = useState('')
   // Market-price form state
   const [formTickerQuery, setFormTickerQuery] = useState('')
   const [tickerMatches, setTickerMatches] = useState<MarketSymbolMatch[]>([])
@@ -571,6 +577,7 @@ const AssetDialog = memo(function AssetDialog({
       setFormGrowthStartDate('')
       setFormTaxCategory('__auto__')
       setFormTaxCategoryTouched(false)
+      setFormTargetPct('')
       resetMarketPriceForm()
     } else {
       const asset = mode.asset
@@ -584,6 +591,7 @@ const AssetDialog = memo(function AssetDialog({
       // categories).
       setFormTaxCategory(asset.tax_category ?? '__auto__')
       setFormTaxCategoryTouched(false)
+      setFormTargetPct(asset.target_pct != null ? String(asset.target_pct) : '')
       setFormCurrency(asset.currency)
       setFormGroupId(asset.group_id ?? '')
       setFormMethod(asset.valuation_method)
@@ -810,6 +818,11 @@ const AssetDialog = memo(function AssetDialog({
       payload.tax_category = formTaxCategory === '__auto__' ? null : formTaxCategory
     }
 
+    // Meaningless without a wallet (the % is relative to it) — the input is
+    // hidden whenever formGroupId is empty, so this is always '' in that
+    // case and resolves to null, same as never having set one.
+    payload.target_pct = formTargetPct.trim() === '' ? null : parseFloat(formTargetPct)
+
     return payload
   }
 
@@ -944,6 +957,26 @@ const AssetDialog = memo(function AssetDialog({
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Rebalancing target — % of the *wallet*, not the total
+                portfolio, so it's only meaningful (and only shown) once a
+                wallet is actually selected above. */}
+            {formGroupId && (
+              <div className="space-y-2">
+                <Label htmlFor="asset-target-pct">{t('assets.assetTargetPctLabel')}</Label>
+                <Input
+                  id="asset-target-pct"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.1"
+                  placeholder={t('assets.rebalanceNoTarget')}
+                  value={formTargetPct}
+                  onChange={e => setFormTargetPct(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">{t('assets.assetTargetPctHint')}</p>
+              </div>
+            )}
 
             {/* Valuation Method — locked on edit */}
             <div className="space-y-2">
@@ -1314,7 +1347,7 @@ export default function AssetsPage() {
     staleTime: Infinity,
   })
 
-  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions' | 'income'>('holdings')
+  const [activeTab, setActiveTab] = useState<'holdings' | 'transactions' | 'income' | 'rebalance'>('holdings')
   // Holding id for the lightweight "add transaction to this holding" dialog,
   // opened from the holdings table ("+ add buys") and the inline ledger.
   const [addTxAssetId, setAddTxAssetId] = useState<string | null>(null)
@@ -1339,6 +1372,10 @@ export default function AssetsPage() {
   const [walletDialogOpen, setWalletDialogOpen] = useState(false)
   const [editingWallet, setEditingWallet] = useState<AssetGroup | null>(null)
   const [walletFormName, setWalletFormName] = useState('')
+  // Rebalancing target — this wallet's target share (%) of the total
+  // portfolio. Kept as a string so the input can be empty ("no target")
+  // without fighting a numeric state's coercion of '' to 0.
+  const [walletFormTargetPct, setWalletFormTargetPct] = useState('')
   const [walletFormColor, setWalletFormColor] = useState('#0EA5E9')
   const [deletingWalletId, setDeletingWalletId] = useState<string | null>(null)
   // Collapsed wallet IDs — default is expanded (empty set), user can collapse manually
@@ -1540,8 +1577,8 @@ export default function AssetsPage() {
   }, [rawWalletsList, activeWalletIds])
 
   const createWalletMutation = useMutation({
-    mutationFn: (data: { name: string; color: string }) =>
-      assetGroups.create({ name: data.name, color: data.color, icon: 'wallet' }),
+    mutationFn: (data: { name: string; color: string; target_pct: number | null }) =>
+      assetGroups.create({ name: data.name, color: data.color, icon: 'wallet', target_pct: data.target_pct }),
     onSuccess: (created) => {
       queryClient.refetchQueries({ queryKey: ['asset-groups'] })
       setWalletDialogOpen(false)
@@ -1556,8 +1593,8 @@ export default function AssetsPage() {
   })
 
   const updateWalletMutation = useMutation({
-    mutationFn: ({ id, ...data }: { id: string; name: string; color: string }) =>
-      assetGroups.update(id, { name: data.name, color: data.color }),
+    mutationFn: ({ id, ...data }: { id: string; name: string; color: string; target_pct: number | null }) =>
+      assetGroups.update(id, { name: data.name, color: data.color, target_pct: data.target_pct }),
     onSuccess: () => {
       queryClient.refetchQueries({ queryKey: ['asset-groups'] })
       setWalletDialogOpen(false)
@@ -1678,6 +1715,7 @@ export default function AssetsPage() {
     setEditingWallet(null)
     setWalletFormName('')
     setWalletFormColor('#0EA5E9')
+    setWalletFormTargetPct('')
     setWalletDialogOpen(true)
   }
 
@@ -1685,16 +1723,18 @@ export default function AssetsPage() {
     setEditingWallet(wallet)
     setWalletFormName(wallet.name)
     setWalletFormColor(wallet.color)
+    setWalletFormTargetPct(wallet.target_pct != null ? String(wallet.target_pct) : '')
     setWalletDialogOpen(true)
   }
 
   function handleSaveWallet() {
     const name = walletFormName.trim()
     if (!name) return
+    const target_pct = walletFormTargetPct.trim() === '' ? null : Number(walletFormTargetPct)
     if (editingWallet) {
-      updateWalletMutation.mutate({ id: editingWallet.id, name, color: walletFormColor })
+      updateWalletMutation.mutate({ id: editingWallet.id, name, color: walletFormColor, target_pct })
     } else {
-      createWalletMutation.mutate({ name, color: walletFormColor })
+      createWalletMutation.mutate({ name, color: walletFormColor, target_pct })
     }
   }
 
@@ -1858,6 +1898,12 @@ export default function AssetsPage() {
         >
           {t('assets.tabIncome')}
         </button>
+        <button
+          onClick={() => setActiveTab('rebalance')}
+          className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${activeTab === 'rebalance' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          {t('assets.tabRebalance')}
+        </button>
       </div>
 
       {activeTab === 'transactions' ? (
@@ -1878,6 +1924,19 @@ export default function AssetsPage() {
           mask={mask}
           canWrite={canWrite}
         />
+      ) : activeTab === 'rebalance' ? (
+        activeAssets.length > 0 ? (
+          <RebalanceWidget
+            wallets={sortedWallets}
+            assetsByGroup={assetsByGroup}
+            totalValue={portfolioTotalPrimary}
+            userCurrency={userCurrency}
+            locale={locale}
+            mask={mask}
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground py-6 text-center">{t('assets.rebalanceEmpty')}</p>
+        )
       ) : (
       <>
       {/* Portfolio Chart */}
@@ -2047,6 +2106,19 @@ export default function AssetsPage() {
                 value={walletFormColor}
                 onChange={e => setWalletFormColor(e.target.value)}
                 className="h-9 w-20 px-1 py-1"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="wallet-target-pct">{t('assets.walletTargetPct')}</Label>
+              <Input
+                id="wallet-target-pct"
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                placeholder={t('assets.rebalanceNoTarget')}
+                value={walletFormTargetPct}
+                onChange={e => setWalletFormTargetPct(e.target.value)}
               />
             </div>
           </div>

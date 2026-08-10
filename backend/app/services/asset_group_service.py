@@ -44,6 +44,7 @@ def _group_to_read(
         connection_id=group.connection_id,
         institution_name=institution_name,
         asset_count=asset_count,
+        target_pct=float(group.target_pct) if group.target_pct is not None else None,
         # Decimal → round to 2dp → float at the API boundary. Precision is
         # preserved inside the sum; the float conversion is only for the
         # JSON response shape and is bounded to 2 decimals.
@@ -196,6 +197,7 @@ async def create_group(
         color=data.color,
         position=position,
         source="manual",
+        target_pct=data.target_pct,
     )
     session.add(group)
     await session.commit()

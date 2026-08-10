@@ -1,7 +1,8 @@
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +44,11 @@ class AssetGroup(Base):
         UUID(as_uuid=True), ForeignKey("bank_connections.id", ondelete="SET NULL"), nullable=True
     )
     external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Rebalancing target — this wallet's target share (%) of the *total*
+    # portfolio. NULL means "no target set": the wallet still shows up in
+    # the allocation pie, just without a rebalance suggestion.
+    target_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2), nullable=True)
 
     user: Mapped["User"] = relationship()
     assets: Mapped[list["Asset"]] = relationship(back_populates="group")

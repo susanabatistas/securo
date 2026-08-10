@@ -621,6 +621,10 @@ export interface Asset {
   // Resolved IR-estimator bucket: override, computed default, or null when
   // the estimator doesn't apply to this asset (real_estate/vehicle/etc).
   tax_category: TaxCategory | null
+  // Rebalancing target — this asset's target share (%) of its own wallet
+  // (group_id), not of the total portfolio. Null = no target set, or the
+  // asset has no wallet for the % to be relative to.
+  target_pct: number | null
   // Cost basis converted at the *purchase*-date FX rate (not today's) —
   // null when currency matches the user's primary currency, or no rate
   // was available to stamp it yet.
@@ -826,6 +830,9 @@ export interface AssetGroup {
   asset_count: number
   current_value: number
   current_value_primary: number
+  // Rebalancing target — this wallet's target share (%) of the total
+  // portfolio. Null = no target set.
+  target_pct: number | null
 }
 
 export interface AssetValue {
