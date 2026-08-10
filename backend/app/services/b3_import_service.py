@@ -122,25 +122,58 @@ def _is_xlsx(content: bytes) -> bool:
     return bool(content) and content.startswith(b"PK")
 
 
+def _xlsx_cell_to_str(cell: object) -> str:
+    """openpyxl (data_only=True) hands back native Python types for
+    numeric/date cells, not the display strings a CSV export would have.
+    Dates/datetimes need an explicit format — plain str() on a datetime
+    appends a " 00:00:00" time component that _parse_date's formats don't
+    accept, silently dropping every trade row as "linha inválida". Numbers
+    round-trip fine through str() (parse_brl_decimal accepts plain
+    "35.5"-style decimals when there's no comma), so only date-like cells
+    need special handling."""
+    if cell is None:
+        return ""
+    if isinstance(cell, (datetime, date)):
+        return cell.strftime("%d/%m/%Y")
+    return str(cell)
+
+
 def _xlsx_to_delimited_text(content: bytes) -> str:
     """First worksheet of an XLSX file, as ';'-delimited text — reuses the
     exact same column-detection/row-parsing path as a native CSV export
     below (B3's Excel download has the same columns, just a different
     container). Raises ValueError (mentioning XLSX/Excel) for anything that
-    isn't a readable workbook, same contract as the CSV path's errors."""
+    isn't a readable workbook, same contract as the CSV path's errors.
+
+    Written with csv.writer (not a naive ";".join) so any delimiter
+    characters embedded in a cell value get quoted rather than corrupting
+    the column count — a naive join, re-split by a sniffed dialect, let a
+    handful of comma-decimal values ("35,50") outweigh the semicolons and
+    made the sniffer misdetect the delimiter, collapsing the whole header
+    into a single column and rejecting every real B3 xlsx export with a
+    422."""
     try:
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover — declared dependency
         raise ValueError("Suporte a arquivos XLSX indisponível neste servidor.") from exc
 
     try:
-        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        # read_only=False (full parse): some real B3 exports ship a
+        # malformed <dimension ref="A1"/> hint in the sheet XML — declaring
+        # only cell A1 even though the sheet actually has 8 columns and many
+        # rows. openpyxl's read_only mode trusts that hint to bound
+        # iter_rows(), truncating every row to column A alone and collapsing
+        # the whole header into a single field. A full (non-lazy) parse reads
+        # the actual cells regardless of the dimension tag. B3 exports are
+        # personal-portfolio sized (rarely more than a few thousand rows), so
+        # the memory cost of not streaming is negligible.
+        workbook = load_workbook(io.BytesIO(content), read_only=False, data_only=True)
         worksheet = workbook.active
-        lines = []
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, delimiter=";")
         for row in worksheet.iter_rows(values_only=True):
-            cells = ["" if cell is None else str(cell) for cell in row]
-            lines.append(";".join(cells))
-        return "\n".join(lines)
+            writer.writerow([_xlsx_cell_to_str(cell) for cell in row])
+        return buffer.getvalue()
     except ValueError:
         raise
     except Exception as exc:
@@ -195,7 +228,8 @@ def parse_b3_csv(content: bytes) -> B3ParseResult:
     before the rest of this function (column detection, row parsing) runs
     unchanged; XLSX is just a different container for the same columns.
     """
-    if _is_xlsx(content):
+    is_xlsx = _is_xlsx(content)
+    if is_xlsx:
         text = _xlsx_to_delimited_text(content)
     else:
         try:
@@ -206,8 +240,15 @@ def parse_b3_csv(content: bytes) -> B3ParseResult:
     if not text.strip():
         raise ValueError("empty file")
 
-    dialect = _sniff_dialect(text)
-    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    # The xlsx path already wrote its own text above with a known ";"
+    # delimiter and proper quoting — re-sniffing it is what caused the
+    # header-collapse bug (see _xlsx_to_delimited_text docstring). Only
+    # sniff for genuine CSV uploads, whose delimiter is unknown upfront.
+    if is_xlsx:
+        reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    else:
+        dialect = _sniff_dialect(text)
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
     if not reader.fieldnames:
         raise ValueError("could not read a header row from this file")
 
