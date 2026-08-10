@@ -1525,7 +1525,18 @@
     "button": "Copia de seguridad",
     "downloading": "Descargando...",
     "success": "Copia de seguridad descargada correctamente",
-    "error": "No se pudo descargar la copia de seguridad"
+    "error": "No se pudo descargar la copia de seguridad",
+    "restoreButton": "Restaurar copia de seguridad",
+    "restoreTitle": "Restaurar copia de seguridad",
+    "restoreDescription": "Sube un archivo .zip de copia de seguridad de Securo. Esto siempre crea un espacio de trabajo nuevo — nunca sobrescribe ni combina con uno existente.",
+    "restoreSelectFile": "Seleccionar archivo de copia de seguridad (.zip)",
+    "restoreExportedAt": "Exportado el {{date}}",
+    "restoreOtherRecords": "+ {{count}} registros más",
+    "restoreNewWorkspaceNote": "Se creará un espacio de trabajo nuevo a partir de esta copia de seguridad, y se cambiará a él.",
+    "restoreConfirm": "Restaurar",
+    "restoreSuccess": "Espacio de trabajo \"{{name}}\" restaurado correctamente",
+    "restoreError": "No se pudo restaurar la copia de seguridad",
+    "restoreInvalidFile": "Este archivo no parece ser una copia de seguridad válida de Securo"
   },
   "update": {
     "title": "Actualización del servidor",

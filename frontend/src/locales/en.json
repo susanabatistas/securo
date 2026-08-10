@@ -1525,7 +1525,18 @@
     "button": "Backup",
     "downloading": "Downloading...",
     "success": "Backup downloaded successfully",
-    "error": "Failed to download backup"
+    "error": "Failed to download backup",
+    "restoreButton": "Restore backup",
+    "restoreTitle": "Restore backup",
+    "restoreDescription": "Upload a Securo backup .zip. This always creates a brand new workspace — it never overwrites or merges into an existing one.",
+    "restoreSelectFile": "Select backup file (.zip)",
+    "restoreExportedAt": "Exported on {{date}}",
+    "restoreOtherRecords": "+ {{count}} other records",
+    "restoreNewWorkspaceNote": "A new workspace will be created from this backup, and you'll be switched into it.",
+    "restoreConfirm": "Restore",
+    "restoreSuccess": "Workspace \"{{name}}\" restored successfully",
+    "restoreError": "Failed to restore backup",
+    "restoreInvalidFile": "This doesn't look like a valid Securo backup file"
   },
   "update": {
     "title": "Server update",

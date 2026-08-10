@@ -1525,7 +1525,18 @@
     "button": "Backup",
     "downloading": "Baixando...",
     "success": "Backup baixado com sucesso",
-    "error": "Erro ao baixar backup"
+    "error": "Erro ao baixar backup",
+    "restoreButton": "Restaurar backup",
+    "restoreTitle": "Restaurar backup",
+    "restoreDescription": "Envie um arquivo .zip de backup do Securo. Isso sempre cria um workspace novo — nunca sobrescreve ou mescla com um existente.",
+    "restoreSelectFile": "Selecionar arquivo de backup (.zip)",
+    "restoreExportedAt": "Exportado em {{date}}",
+    "restoreOtherRecords": "+ {{count}} outros registros",
+    "restoreNewWorkspaceNote": "Um workspace novo será criado a partir desse backup, e você será levado até ele.",
+    "restoreConfirm": "Restaurar",
+    "restoreSuccess": "Workspace \"{{name}}\" restaurado com sucesso",
+    "restoreError": "Erro ao restaurar backup",
+    "restoreInvalidFile": "Esse arquivo não parece ser um backup válido do Securo"
   },
   "update": {
     "title": "Atualização do servidor",

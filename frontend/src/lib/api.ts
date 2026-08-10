@@ -1298,6 +1298,13 @@ export const settings = {
   },
 }
 
+export interface BackupPreview {
+  workspace_name: string | null
+  export_date: string | null
+  format_version: string | null
+  entity_counts: Record<string, number>
+}
+
 // Backup
 export const backup = {
   download: async (): Promise<void> => {
@@ -1311,6 +1318,21 @@ export const backup = {
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  },
+  // Validates the zip and summarizes it — writes nothing to the database.
+  restorePreview: async (file: File): Promise<BackupPreview> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const { data } = await api.post('/export/restore/preview', formData)
+    return data
+  },
+  // Restores into a brand new workspace (never merges into an existing
+  // one) and returns it — the caller becomes its owner.
+  restore: async (file: File): Promise<Workspace> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const { data } = await api.post('/export/restore', formData)
+    return data
   },
 }
 

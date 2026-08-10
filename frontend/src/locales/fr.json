@@ -1525,7 +1525,18 @@
     "button": "Sauvegarde",
     "downloading": "Téléchargement...",
     "success": "Sauvegarde téléchargée avec succès",
-    "error": "Échec du téléchargement de la sauvegarde"
+    "error": "Échec du téléchargement de la sauvegarde",
+    "restoreButton": "Restaurer la sauvegarde",
+    "restoreTitle": "Restaurer la sauvegarde",
+    "restoreDescription": "Importez un fichier .zip de sauvegarde Securo. Cela crée toujours un nouvel espace de travail — jamais de remplacement ni de fusion avec un espace existant.",
+    "restoreSelectFile": "Sélectionner le fichier de sauvegarde (.zip)",
+    "restoreExportedAt": "Exporté le {{date}}",
+    "restoreOtherRecords": "+ {{count}} autres éléments",
+    "restoreNewWorkspaceNote": "Un nouvel espace de travail sera créé à partir de cette sauvegarde, et vous y serez basculé.",
+    "restoreConfirm": "Restaurer",
+    "restoreSuccess": "« {{name}} » restauré avec succès",
+    "restoreError": "Échec de la restauration de la sauvegarde",
+    "restoreInvalidFile": "Ce fichier ne semble pas être une sauvegarde Securo valide"
   },
   "update": {
     "title": "Mise à jour du serveur",

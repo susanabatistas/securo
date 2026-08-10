@@ -1525,7 +1525,18 @@
     "button": "Backup",
     "downloading": "Wird heruntergeladen...",
     "success": "Backup erfolgreich heruntergeladen",
-    "error": "Fehler beim Herunterladen des Backups"
+    "error": "Fehler beim Herunterladen des Backups",
+    "restoreButton": "Backup wiederherstellen",
+    "restoreTitle": "Backup wiederherstellen",
+    "restoreDescription": "Lade eine Securo-Backup-.zip-Datei hoch. Dabei wird immer ein neuer Workspace erstellt — nie ein bestehender überschrieben oder zusammengeführt.",
+    "restoreSelectFile": "Backup-Datei auswählen (.zip)",
+    "restoreExportedAt": "Exportiert am {{date}}",
+    "restoreOtherRecords": "+ {{count}} weitere Einträge",
+    "restoreNewWorkspaceNote": "Aus diesem Backup wird ein neuer Workspace erstellt, zu dem du wechselst.",
+    "restoreConfirm": "Wiederherstellen",
+    "restoreSuccess": "Workspace \"{{name}}\" erfolgreich wiederhergestellt",
+    "restoreError": "Backup konnte nicht wiederhergestellt werden",
+    "restoreInvalidFile": "Diese Datei sieht nicht wie ein gültiges Securo-Backup aus"
   },
   "update": {
     "title": "Server-Update",

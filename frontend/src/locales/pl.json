@@ -1615,7 +1615,18 @@
     "button": "Kopia zapasowa",
     "downloading": "Pobieranie...",
     "success": "Pomyślnie pobrano kopię zapasową",
-    "error": "Nie udało się pobrać kopii zapasowej"
+    "error": "Nie udało się pobrać kopii zapasowej",
+    "restoreButton": "Przywróć kopię zapasową",
+    "restoreTitle": "Przywróć kopię zapasową",
+    "restoreDescription": "Prześlij plik .zip kopii zapasowej Securo. Zawsze tworzy to nową przestrzeń roboczą — nigdy nie nadpisuje ani nie łączy z istniejącą.",
+    "restoreSelectFile": "Wybierz plik kopii zapasowej (.zip)",
+    "restoreExportedAt": "Wyeksportowano {{date}}",
+    "restoreOtherRecords": "+ {{count}} innych rekordów",
+    "restoreNewWorkspaceNote": "Zostanie utworzona nowa przestrzeń robocza na podstawie tej kopii zapasowej, a Ty zostaniesz do niej przełączony.",
+    "restoreConfirm": "Przywróć",
+    "restoreSuccess": "Przestrzeń robocza \"{{name}}\" przywrócona pomyślnie",
+    "restoreError": "Nie udało się przywrócić kopii zapasowej",
+    "restoreInvalidFile": "Ten plik nie wygląda na prawidłową kopię zapasową Securo"
   },
   "update": {
     "title": "Aktualizacja serwera",

@@ -7,6 +7,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { workspaces as workspacesApi } from '@/lib/api'
 import { resolveSupportedLang } from '@/lib/i18n'
+import { useDateLocale } from '@/hooks/use-display-locale'
+import { RestoreBackupDialog } from '@/components/restore-backup-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -35,6 +37,7 @@ import {
   ChevronsUpDown,
   Download,
   HardDriveDownload,
+  HardDriveUpload,
   KeyRound,
   Languages,
   LogOut,
@@ -110,7 +113,9 @@ export function WorkspaceSwitcher({
   const navigate = useNavigate()
   const { current, workspaces, switchWorkspace, refresh } = useWorkspace()
   const { user, logout } = useAuth()
+  const dateLocale = useDateLocale()
   const [createOpen, setCreateOpen] = useState(false)
+  const [restoreOpen, setRestoreOpen] = useState(false)
   const [newName, setNewName] = useState('')
 
   const currentLang = resolveSupportedLang(i18n.resolvedLanguage ?? i18n.language)
@@ -259,6 +264,13 @@ export function WorkspaceSwitcher({
           >
             <HardDriveDownload size={14} />
             {backingUp ? t('backup.downloading') : t('backup.button')}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() => setRestoreOpen(true)}
+            className="flex items-center gap-2"
+          >
+            <HardDriveUpload size={14} />
+            {t('backup.restoreButton')}
           </DropdownMenuItem>
 
           {agentsEnabled && (
@@ -425,6 +437,8 @@ export function WorkspaceSwitcher({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RestoreBackupDialog open={restoreOpen} onOpenChange={setRestoreOpen} dateLocale={dateLocale} />
     </>
   )
 }

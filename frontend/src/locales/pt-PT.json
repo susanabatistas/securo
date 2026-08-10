@@ -1525,7 +1525,18 @@
     "button": "Backup",
     "downloading": "A transferir...",
     "success": "Backup baixado com sucesso",
-    "error": "Erro ao transferir backup"
+    "error": "Erro ao transferir backup",
+    "restoreButton": "Restaurar backup",
+    "restoreTitle": "Restaurar backup",
+    "restoreDescription": "Envie um ficheiro .zip de backup do Securo. Isto cria sempre um workspace novo — nunca substitui nem mistura com um existente.",
+    "restoreSelectFile": "Selecionar ficheiro de backup (.zip)",
+    "restoreExportedAt": "Exportado em {{date}}",
+    "restoreOtherRecords": "+ {{count}} outros registos",
+    "restoreNewWorkspaceNote": "Vai ser criado um workspace novo a partir deste backup, e vai ser mudado para ele.",
+    "restoreConfirm": "Restaurar",
+    "restoreSuccess": "Workspace \"{{name}}\" restaurado com sucesso",
+    "restoreError": "Erro ao restaurar backup",
+    "restoreInvalidFile": "Este ficheiro não parece ser um backup válido do Securo"
   },
   "update": {
     "title": "Atualização do servidor",
