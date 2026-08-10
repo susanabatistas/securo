@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.recurring_transaction import RecurringTransaction
 from app.models.transaction import Transaction
-from app.services.date_stepping import advance_date
+from app.services.date_stepping import adjust_weekend_date, advance_date
 
 # Description-similarity bar for accepting a link. Matches the established
 # bank-sync fuzzy-merge threshold (connection_service._fuzzy_match_manual).
@@ -159,8 +159,11 @@ async def find_bill_for_incoming(
     best_score = 0.0
     for rec in result.scalars():
         before, after = _match_window(rec.frequency)
-        lo = rec.next_occurrence - timedelta(days=before)
-        hi = rec.next_occurrence + timedelta(days=after)
+        effective_occurrence = adjust_weekend_date(
+            rec.next_occurrence, rec.weekend_adjustment
+        )
+        lo = effective_occurrence - timedelta(days=before)
+        hi = effective_occurrence + timedelta(days=after)
         if not (lo <= tx_date <= hi):
             continue
         score = _description_similarity(rec.description, description)
