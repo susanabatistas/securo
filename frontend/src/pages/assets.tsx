@@ -782,13 +782,21 @@ const AssetDialog = memo(function AssetDialog({
       currency: formCurrency,
       group_id: formGroupId || null,
       valuation_method: formMethod,
-      purchase_date: formPurchaseDate || null,
-      // Tickers have no total purchase price — the cost basis is derived from
-      // the unit-price buy (and then the ledger). Only manual/growth assets
-      // carry a total purchase price.
-      purchase_price: isMarket ? null : (formPurchasePrice ? parseFloat(formPurchasePrice) : null),
-      sell_date: isMarket ? null : (formSellDate || null),
-      sell_price: isMarket ? null : (formSellPrice ? parseFloat(formSellPrice) : null),
+    }
+
+    // Tickers have no total purchase price/date — the cost basis (and
+    // purchase_date = first buy) is owned by the transaction ledger,
+    // recomputed after every buy/sell (asset_transaction_service.
+    // recompute_and_cache). These 4 fields must be *omitted* here, not set
+    // to null: sending them (even as null) makes the backend's
+    // exclude_unset update apply them, silently wiping the ledger's cached
+    // cost basis on every unrelated edit (rename, wallet change, target %,
+    // ...) until the next transaction happens to recompute it.
+    if (!isMarket) {
+      payload.purchase_date = formPurchaseDate || null
+      payload.purchase_price = formPurchasePrice ? parseFloat(formPurchasePrice) : null
+      payload.sell_date = formSellDate || null
+      payload.sell_price = formSellPrice ? parseFloat(formSellPrice) : null
     }
 
     if (formMethod === 'growth_rule') {
