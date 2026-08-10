@@ -14,6 +14,9 @@ from app.core.database import get_async_session
 from app.core.workspace_context import WorkspaceContext, current_workspace
 from app.models.account import Account
 from app.models.asset import Asset
+from app.models.asset_group import AssetGroup
+from app.models.asset_income import AssetIncome
+from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
 from app.models.budget import Budget
 from app.models.category import Category
@@ -61,8 +64,15 @@ async def backup(
     rules = (await session.execute(select(Rule).where(Rule.workspace_id == ws_id))).scalars().all()
     recurring_transactions = (await session.execute(select(RecurringTransaction).where(RecurringTransaction.workspace_id == ws_id))).scalars().all()
     budgets = (await session.execute(select(Budget).where(Budget.workspace_id == ws_id))).scalars().all()
+    asset_groups = (await session.execute(select(AssetGroup).where(AssetGroup.workspace_id == ws_id))).scalars().all()
     assets = (await session.execute(select(Asset).where(Asset.workspace_id == ws_id))).scalars().all()
     import_logs = (await session.execute(select(ImportLog).where(ImportLog.workspace_id == ws_id))).scalars().all()
+    asset_transactions = (
+        (await session.execute(select(AssetTransaction).where(AssetTransaction.workspace_id == ws_id))).scalars().all()
+    )
+    asset_income = (
+        (await session.execute(select(AssetIncome).where(AssetIncome.workspace_id == ws_id))).scalars().all()
+    )
 
     asset_ids = [a.id for a in assets]
     if asset_ids:
@@ -78,8 +88,11 @@ async def backup(
         "rules": rules,
         "recurring_transactions": recurring_transactions,
         "budgets": budgets,
+        "asset_groups": asset_groups,
         "assets": assets,
         "asset_values": asset_values,
+        "asset_transactions": asset_transactions,
+        "asset_income": asset_income,
         "import_logs": import_logs,
     }
 
@@ -93,7 +106,11 @@ async def backup(
 
         metadata = {
             "export_date": datetime.now(timezone.utc).isoformat(),
-            "format_version": "1.0",
+            # 1.1 adds asset_groups, asset_transactions, and asset_income —
+            # previously the backup had assets/asset_values but not the
+            # wallets they belong to, the buy/sell ledger cost basis is
+            # derived from, or any dividend history.
+            "format_version": "1.1",
             "workspace_id": str(ws_id),
             "workspace_name": ctx.workspace.name,
             "entity_counts": entity_counts,
