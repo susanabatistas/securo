@@ -29,6 +29,7 @@ import type {
   ImportLog,
   ImportPreviewTransaction,
   Workspace,
+  WorkspaceKind,
   WorkspaceMember,
   WorkspaceRole,
   Asset,
@@ -64,6 +65,9 @@ import type {
   GroupBalances,
   TransactionSplitsInput,
   CdiMonthlyPoint,
+  TransactionEditPayload,
+  InstallmentSeriesInput,
+  TransactionApplyScope,
 } from '@/types'
 
 const api = axios.create({
@@ -112,7 +116,7 @@ export const workspaces = {
   },
   create: async (payload: {
     name: string
-    kind?: string
+    kind?: WorkspaceKind
     default_currency?: string
     locale?: string
     icon?: string
@@ -122,6 +126,7 @@ export const workspaces = {
     const { data } = await api.post('/workspaces', payload)
     return data
   },
+  // `kind` is absent on purpose: it is fixed when the workspace is created.
   update: async (id: string, payload: Partial<Pick<Workspace, 'name' | 'icon' | 'color' | 'default_currency' | 'locale'>>): Promise<Workspace> => {
     const { data } = await api.patch(`/workspaces/${id}`, payload)
     return data
@@ -481,7 +486,7 @@ export const transactions = {
     const { data } = await api.get(`/transactions/${id}`)
     return data
   },
-  create: async (transaction: Partial<Transaction>): Promise<Transaction> => {
+  create: async (transaction: TransactionEditPayload): Promise<Transaction> => {
     const { data } = await api.post('/transactions', transaction)
     return data
   },
@@ -502,15 +507,22 @@ export const transactions = {
     const { data: result } = await api.post('/transactions/installment-plan', data)
     return result
   },
+  createInstallments: async (payload: InstallmentSeriesInput): Promise<Transaction[]> => {
+    const { data } = await api.post('/transactions/installments', payload)
+    return data
+  },
   update: async (
     id: string,
-    transaction: Partial<Transaction> & { apply_to_transfer_pair?: boolean },
+    transaction: TransactionEditPayload & {
+      apply_to_transfer_pair?: boolean
+      apply_to?: TransactionApplyScope
+    },
   ): Promise<Transaction> => {
     const { data } = await api.patch(`/transactions/${id}`, transaction)
     return data
   },
-  delete: async (id: string): Promise<void> => {
-    await api.delete(`/transactions/${id}`)
+  delete: async (id: string, applyTo: TransactionApplyScope = 'this'): Promise<void> => {
+    await api.delete(`/transactions/${id}`, { params: { apply_to: applyTo } })
   },
   toggleIgnore: async (id: string): Promise<Transaction> => {
     const { data } = await api.patch(`/transactions/${id}/ignore`)
@@ -527,7 +539,7 @@ export const transactions = {
     date: string
     description: string
     notes?: string
-    fx_rate?: number
+    destination_amount?: number
   }): Promise<{ debit: Transaction; credit: Transaction; transfer_pair_id: string }> => {
     const { data } = await api.post('/transactions/transfer', transfer)
     return data

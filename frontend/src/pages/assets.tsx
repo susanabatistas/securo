@@ -69,32 +69,7 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
-
-// Intl.NumberFormat construction is expensive relative to .format() — this
-// page calls formatCurrency several times per holding row plus once per
-// series per chart-tooltip frame (i.e. on every mousemove while hovering
-// the portfolio/value chart), so an uncached formatter measurably compounds
-// with asset count. Cache is unbounded but keyed on (locale, currency)
-// pairs, which is a tiny, near-constant set in practice.
-const currencyFormatterCache = new Map<string, Intl.NumberFormat>()
-
-function getCurrencyFormatter(currency: string, locale: string): Intl.NumberFormat {
-  const key = `${locale}|${currency}`
-  let fmt = currencyFormatterCache.get(key)
-  if (!fmt) {
-    try {
-      fmt = new Intl.NumberFormat(locale, { style: 'currency', currency })
-    } catch {
-      fmt = new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD' })
-    }
-    currencyFormatterCache.set(key, fmt)
-  }
-  return fmt
-}
-
-function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
-  return getCurrencyFormatter(currency || 'USD', locale).format(value)
-}
+import { formatCurrency } from '@/lib/format'
 
 // Renders a logo image when one is available, falling back to the asset's
 // type-based Lucide icon on missing URL or broken image. Uses the type's

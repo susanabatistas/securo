@@ -28,6 +28,7 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import type { ReportResponse, CategoryTrendItem } from '@/types'
+import { formatCurrency } from '@/lib/format'
 
 // A small qualitative palette of well-separated hues for the composition
 // detail ring. Capped to a handful of slices, distinct colours make each
@@ -62,10 +63,6 @@ function groupOfBreakdownKey(key: string): string {
   return key === 'projectedIncome' ? 'income'
     : key === 'projectedExpenses' ? 'expenses'
       : key
-}
-
-function formatCurrency(value: number, currency = 'USD', locale = 'en-US') {
-  return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(value)
 }
 
 function formatCompact(value: number, currency = 'USD', locale = 'en-US') {
