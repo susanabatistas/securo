@@ -1,12 +1,16 @@
 """add stable ids to manual installment series
 
-Revision ID: 069
-Revises: 068
+Revision ID: 073
+Revises: 072
 Create Date: 2026-08-12
 
 Manual installment rows created by the series endpoint share one UUID. The
 existing installment metadata remains available for provider sync deduplication
 and for legacy rows that predate this migration.
+
+Renumbered from upstream's 069 to 073 when merging upstream/main into this
+fork — 069 was already taken here by an unrelated fork-only migration
+(target_allocation).
 """
 
 from typing import Sequence, Union
@@ -16,8 +20,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "069"
-down_revision: Union[str, None] = "068"
+revision: str = "073"
+down_revision: Union[str, None] = "072"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

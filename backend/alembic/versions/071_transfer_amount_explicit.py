@@ -1,8 +1,13 @@
 """flag transfers whose destination amount was entered by the user (issue #529)
 
-Revision ID: 067
-Revises: 066
+Revision ID: 071
+Revises: 070
 Create Date: 2026-08-12
+
+Renumbered from upstream's 067 to 071 when merging upstream/main into this
+fork — 067 was already taken here by an unrelated fork-only migration
+(asset_tax_category), and the fork's chain by this point already extends
+past it through 070.
 
 A cross-currency transfer can be created either by converting the source amount
 at the market rate or by typing the amount that actually landed on the
@@ -18,8 +23,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "067"
-down_revision: Union[str, None] = "066"
+revision: str = "071"
+down_revision: Union[str, None] = "070"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

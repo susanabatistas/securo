@@ -1,8 +1,12 @@
 """normalize workspaces.kind to the supported set
 
-Revision ID: 068
-Revises: 067
+Revision ID: 072
+Revises: 071
 Create Date: 2026-08-12
+
+Renumbered from upstream's 068 to 072 when merging upstream/main into this
+fork — 068 was already taken here by an unrelated fork-only migration
+(asset_income).
 
 `kind` is now two values, personal and business. The three retired ones
 all described work rather than a household, so they fold into
@@ -22,8 +26,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
-revision: str = "068"
-down_revision: Union[str, None] = "067"
+revision: str = "072"
+down_revision: Union[str, None] = "071"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
