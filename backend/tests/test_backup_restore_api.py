@@ -266,3 +266,51 @@ async def test_restore_ignores_workspace_id_and_user_id_from_the_file(
     ).scalar_one()
     assert restored_account.id != test_account.id  # fresh id, not the file's original
     assert restored_account.user_id == test_user.id
+
+
+@pytest.mark.asyncio
+async def test_restore_reads_a_password_protected_backup(
+    client: AsyncClient, auth_headers: dict, test_account: Account,
+):
+    """parse_backup_zip opens with pyzipper.AESZipFile precisely so it can
+    read a backup encrypted via POST /api/export/backup — the encryption
+    feature and the restore feature were built independently and this is
+    the one thing that actually links them."""
+    resp = await client.post(
+        "/api/export/backup", json={"password": "correct horse battery"}, headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    content = resp.content
+
+    # Wrong/missing password -> 422, not a crash or a silent partial read.
+    no_password = await client.post(
+        "/api/export/restore/preview",
+        headers=auth_headers,
+        files={"file": ("backup.zip", content, "application/zip")},
+    )
+    assert no_password.status_code == 422
+
+    wrong_password = await client.post(
+        "/api/export/restore/preview",
+        headers=auth_headers,
+        data={"password": "wrong horse battery"},
+        files={"file": ("backup.zip", content, "application/zip")},
+    )
+    assert wrong_password.status_code == 422
+
+    preview = await client.post(
+        "/api/export/restore/preview",
+        headers=auth_headers,
+        data={"password": "correct horse battery"},
+        files={"file": ("backup.zip", content, "application/zip")},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["entity_counts"]["accounts"] == 1
+
+    restore = await client.post(
+        "/api/export/restore",
+        headers=auth_headers,
+        data={"password": "correct horse battery"},
+        files={"file": ("backup.zip", content, "application/zip")},
+    )
+    assert restore.status_code == 201, restore.text

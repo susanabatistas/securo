@@ -28,12 +28,17 @@ import type {
   RuleImportResponse,
   ImportLog,
   ImportPreviewTransaction,
+  PayeeTaxId,
+  TaxIdKindOption,
   Workspace,
   WorkspaceKind,
   WorkspaceMember,
   WorkspaceRole,
   Asset,
   AssetGroup,
+  AssetImportPreview,
+  AssetImportResult,
+  AssetOrderImport,
   AssetTransaction,
   AssetValue,
   MarketSymbolMatch,
@@ -119,6 +124,7 @@ export const workspaces = {
     kind?: WorkspaceKind
     default_currency?: string
     locale?: string
+    tax_jurisdiction?: string | null
     icon?: string
     color?: string
     self_membership?: boolean
@@ -127,7 +133,12 @@ export const workspaces = {
     return data
   },
   // `kind` is absent on purpose: it is fixed when the workspace is created.
-  update: async (id: string, payload: Partial<Pick<Workspace, 'name' | 'icon' | 'color' | 'default_currency' | 'locale'>>): Promise<Workspace> => {
+  update: async (
+    id: string,
+    payload: Partial<
+      Pick<Workspace, 'name' | 'icon' | 'color' | 'default_currency' | 'locale'>
+    > & { tax_jurisdiction?: string | null },
+  ): Promise<Workspace> => {
     const { data } = await api.patch(`/workspaces/${id}`, payload)
     return data
   },
@@ -459,6 +470,7 @@ export const transactions = {
     include_opening_balance?: boolean
     exclude_transfers?: boolean
     user_pnl_only?: boolean
+    exclude_ignored?: boolean
     tags?: string[]
     min_amount?: number
     max_amount?: number
@@ -667,6 +679,7 @@ export const transactions = {
     to?: string
     q?: string
     tags?: string[]
+    exclude_ignored?: boolean
     transaction_ids?: string[]
   }): Promise<void> => {
     const { data } = await api.get('/transactions/export', {
@@ -712,6 +725,38 @@ export const transactions = {
 }
 
 // Payees
+/** Jurisdiction metadata. Labels, masks and ordering come from the server so
+ *  the browser cannot disagree with it about what a document looks like. */
+export const fiscal = {
+  jurisdictions: async (): Promise<string[]> => {
+    const { data } = await api.get('/fiscal/jurisdictions')
+    return data.jurisdictions
+  },
+  taxIdKinds: async (): Promise<{
+    jurisdiction: string | null
+    kinds: TaxIdKindOption[]
+    /** Country to documents, for grouping and searching the picker by country. */
+    jurisdictions: { code: string; kinds: string[] }[]
+  }> => {
+    const { data } = await api.get('/fiscal/tax-id-kinds')
+    return data
+  },
+}
+
+export interface PayeeWritePayload {
+  name?: string
+  /** Null clears the legal nature. `source` is never writable. */
+  type?: 'person' | 'company' | null
+  notes?: string
+  email?: string | null
+  phone?: string | null
+  address?: string | null
+  website?: string | null
+  is_favorite?: boolean
+  /** Replaces the whole set. Omit to leave documents untouched. */
+  tax_ids?: PayeeTaxId[]
+}
+
 export const payees = {
   list: async (params?: { q?: string; type?: string; is_favorite?: boolean } | Record<string, unknown>): Promise<Payee[]> => {
     const cleanParams = params && !('queryKey' in params) ? params : undefined
@@ -726,11 +771,11 @@ export const payees = {
     const { data } = await api.get(`/payees/${id}/summary`, { params: { from, to } })
     return data
   },
-  create: async (payee: { name: string; type?: string; notes?: string }): Promise<Payee> => {
+  create: async (payee: PayeeWritePayload & { name: string }): Promise<Payee> => {
     const { data } = await api.post('/payees', payee)
     return data
   },
-  update: async (id: string, payee: Partial<Payee>): Promise<Payee> => {
+  update: async (id: string, payee: PayeeWritePayload): Promise<Payee> => {
     const { data } = await api.patch(`/payees/${id}`, payee)
     return data
   },
@@ -1029,8 +1074,8 @@ export const dashboard = {
     const { data } = await api.get('/dashboard/monthly-trend', { params: { months, ...(extra.params ?? {}) }, ...(extra.paramsSerializer ? { paramsSerializer: extra.paramsSerializer } : {}) })
     return data
   },
-  projectedTransactions: async (month?: string): Promise<ProjectedTransaction[]> => {
-    const { data } = await api.get('/dashboard/projected-transactions', { params: { month } })
+  projectedTransactions: async (params?: { month?: string; account_id?: string; from?: string; to?: string }): Promise<ProjectedTransaction[]> => {
+    const { data } = await api.get('/dashboard/projected-transactions', { params })
     return data
   },
   balanceHistory: async (month?: string, accountIds?: string[]): Promise<BalanceHistory> => {
@@ -1195,6 +1240,38 @@ export const assets = {
       return data
     },
   },
+  previewImport: async (
+    file: File,
+    options?: { column_mapping?: Record<string, string>; date_format?: string; group_id?: string | null },
+  ): Promise<AssetImportPreview> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (options?.date_format) formData.append('date_format', options.date_format)
+    if (options?.group_id) formData.append('group_id', options.group_id)
+    if (options?.column_mapping && Object.keys(options.column_mapping).length > 0) {
+      formData.append('column_mapping', JSON.stringify(options.column_mapping))
+    }
+    const { data } = await api.post('/assets/import/preview', formData)
+    return data
+  },
+  importOrders: async (
+    orders: AssetOrderImport[],
+    group_id?: string | null,
+  ): Promise<AssetImportResult> => {
+    const { data } = await api.post('/assets/import', { orders, group_id: group_id || null })
+    return data
+  },
+  importTemplate: async (): Promise<void> => {
+    const { data } = await api.get('/assets/import/template', { responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([data], { type: 'text/csv;charset=utf-8;' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'securo-asset-orders.csv'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  },
 }
 
 // Market indices (BCB) — CDI acumulado and USD/BRL PTAX, no key required.
@@ -1325,8 +1402,17 @@ export interface BackupPreview {
 
 // Backup
 export const backup = {
-  download: async (): Promise<void> => {
-    const { data } = await api.get('/export/backup', { responseType: 'blob' })
+  /**
+   * Download the workspace archive, encrypted with AES-256 when a password is
+   * given. POST rather than GET so the password stays out of browser history
+   * and proxy logs.
+   */
+  download: async (password?: string): Promise<void> => {
+    const { data } = await api.post(
+      '/export/backup',
+      password ? { password } : {},
+      { responseType: 'blob' },
+    )
     const blob = new Blob([data], { type: 'application/zip' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

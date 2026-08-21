@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { getAccountLabel, getAccountName } from '@/lib/account-utils'
+import { getAccountLabel, getAccountName, sortAccountsByDisplayName } from '@/lib/account-utils'
 import { useTranslation } from 'react-i18next'
 import { useDateLocale, useDisplayLocale } from '@/hooks/use-display-locale'
 import { formatCurrency } from '@/lib/format'
@@ -9,6 +9,7 @@ import { currencies as currenciesApi, transactions as transactionsApi, settings 
 import { localDateString } from '@/lib/date-utils'
 import { invalidateFinancialQueries } from '@/lib/invalidate-queries'
 import { normalizeRuleMatchValue } from '@/lib/rule-match-utils'
+import { flattenConditions, hasConditionGroups } from '@/lib/rule-conditions'
 import { cn, normalizeText } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -94,6 +95,10 @@ function getRuleCategoryId(rule: Rule): string | null {
 }
 
 function canExtendRuleFromTransaction(rule: Rule): boolean {
+  // Rules that mix AND and OR are left out: appending a top-level condition —
+  // and possibly flipping the rule to OR — would silently change what the
+  // grouped rule matches. Those are edited from the rules page instead.
+  if (hasConditionGroups(rule.conditions)) return false
   return rule.is_active && !!getRuleCategoryId(rule) && (rule.conditions_op === 'or' || rule.conditions.length <= 1)
 }
 
@@ -435,6 +440,7 @@ function TransactionForm({
   const userCurrency = user?.preferences?.currency_display ?? 'USD'
   const dateLocale = useDateLocale()
   const displayLocale = useDisplayLocale()
+  const sortedAccounts = useMemo(() => sortAccountsByDisplayName(accounts), [accounts])
   const { data: supportedCurrencies } = useQuery({
     queryKey: ['currencies'],
     queryFn: currenciesApi.list,
@@ -453,7 +459,7 @@ function TransactionForm({
   const [currency, setCurrency] = useState(seed?.currency ?? userCurrency)
   const [categoryId, setCategoryId] = useState(seed?.category_id ?? '')
   const [payeeId, setPayeeId] = useState(seed?.payee_id ?? '')
-  const [accountId, setAccountId] = useState(seed?.account_id ?? accounts[0]?.id ?? '')
+  const [accountId, setAccountId] = useState(seed?.account_id ?? sortedAccounts[0]?.id ?? '')
   const [notes, setNotes] = useState(seed?.notes ?? '')
   // Manual CC bucketing override (issue #92). Empty = auto. Visible only
   // when the selected account is a credit card.
@@ -559,7 +565,7 @@ function TransactionForm({
       rule: Rule
       condition: RuleCondition
     }) => {
-      const duplicate = rule.conditions.some(existing =>
+      const duplicate = flattenConditions(rule.conditions).some(existing =>
         existing.field === condition.field &&
         existing.op === condition.op &&
         normalizeRuleMatchValue(existing.value) === normalizeRuleMatchValue(condition.value)
@@ -905,6 +911,15 @@ function TransactionForm({
             className="bg-card"
           />
         )}
+        {transaction?.original_description &&
+          transaction.original_description !== transaction.description && (
+            <p className="text-xs text-muted-foreground">
+              {t('transactions.originalDescription')}: {transaction.original_description}
+            </p>
+          )}
+        {/* Rows that pre-date the original_description column have no
+            provenance to show, so the raw payee stays the only hint at what
+            the bank actually sent. */}
         {isSynced && transaction?.payee && transaction.payee !== transaction.description && (
           <p className="text-xs text-muted-foreground">{transaction.payee}</p>
         )}
@@ -1081,7 +1096,7 @@ function TransactionForm({
               onChange={(e) => setAccountId(e.target.value)}
               required
             >
-              {accounts.map((acc) => (
+              {sortedAccounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>{getAccountLabel(acc)}</option>
               ))}
             </select>

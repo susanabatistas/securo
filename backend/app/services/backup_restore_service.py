@@ -22,12 +22,12 @@ from __future__ import annotations
 import io
 import json
 import uuid
-import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
+import pyzipper
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.account import Account
@@ -129,19 +129,28 @@ def _deserialize(model: type, row: dict[str, Any], overrides: dict[str, Any]) ->
     return model(**kwargs)
 
 
-def parse_backup_zip(content: bytes) -> RestoreBundle:
+def parse_backup_zip(content: bytes, password: Optional[str] = None) -> RestoreBundle:
     """Validate and decode a backup zip without touching the database.
     Raises ValueError with a message safe to surface to the user for
-    anything that isn't a readable Securo backup of a supported version."""
+    anything that isn't a readable Securo backup of a supported version —
+    including a missing/wrong password on an AES-encrypted archive.
+
+    Opened with pyzipper.AESZipFile rather than the stdlib zipfile: it
+    transparently reads both a plain zip and one encrypted with
+    build_backup_archive's AES-256 (setting a password is a no-op on a
+    plain archive), so this one code path handles both without needing to
+    sniff which kind was uploaded."""
     if not content:
         raise ValueError("empty file")
     if len(content) > MAX_BACKUP_BYTES:
         raise ValueError(f"backup file too large (max {MAX_BACKUP_BYTES // (1024 * 1024)}MB)")
 
     try:
-        zf = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
+        zf = pyzipper.AESZipFile(io.BytesIO(content))
+    except pyzipper.BadZipFile as exc:
         raise ValueError("not a valid zip file") from exc
+    if password:
+        zf.setpassword(password.encode("utf-8"))
 
     with zf:
         names = set(zf.namelist())
@@ -151,6 +160,10 @@ def parse_backup_zip(content: bytes) -> RestoreBundle:
             metadata = json.loads(zf.read("metadata.json"))
         except json.JSONDecodeError as exc:
             raise ValueError("metadata.json is not valid JSON") from exc
+        except RuntimeError as exc:
+            # pyzipper raises RuntimeError (not a dedicated exception type)
+            # for both "no password given" and "wrong password".
+            raise ValueError("this backup is password-protected, or the password given is wrong") from exc
 
         version = str(metadata.get("format_version", ""))
         try:

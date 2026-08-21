@@ -64,6 +64,7 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from 'recharts'
+import { useNavigate } from 'react-router-dom'
 import { PageHeader } from '@/components/page-header'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
@@ -1320,6 +1321,7 @@ const AssetDialog = memo(function AssetDialog({
 
 export default function AssetsPage() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const locale = useDisplayLocale()
   const dateLocale = useDateLocale()
   const { mask } = usePrivacyMode()
@@ -1829,6 +1831,10 @@ export default function AssetsPage() {
                 <Button onClick={() => setB3ImportOpen(true)} variant="outline" className="gap-1.5">
                   <Upload size={16} />
                   {t('assets.b3ImportButton')}
+                </Button>
+                <Button onClick={() => navigate('/assets/import')} variant="outline" className="gap-1.5">
+                  <Upload size={16} />
+                  {t('assetImport.action')}
                 </Button>
                 <Button onClick={openCreateWallet} variant="outline" className="gap-1.5">
                   <Wallet size={16} />

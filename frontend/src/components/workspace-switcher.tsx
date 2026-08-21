@@ -74,8 +74,6 @@ function workspaceColor(w: Workspace): string {
 }
 
 interface AccountMenuProps {
-  /** Backup download in progress — disables the menu item. */
-  backingUp: boolean
   /** Open the change-password dialog. */
   onChangePassword: () => void
   /** Open the 2FA setup dialog. */
@@ -100,7 +98,6 @@ interface AccountMenuProps {
  * only needs to trigger them.
  */
 export function WorkspaceSwitcher({
-  backingUp,
   onChangePassword,
   onTwoFactor,
   onPasskeys,
@@ -260,12 +257,11 @@ export function WorkspaceSwitcher({
             {t('auth.passkeysTitle')}
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={backingUp}
             onClick={onBackup}
             className="flex items-center gap-2"
           >
             <HardDriveDownload size={14} />
-            {backingUp ? t('backup.downloading') : t('backup.button')}
+            {t('backup.button')}
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => setRestoreOpen(true)}

@@ -8,9 +8,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { CollectionSelector } from '@/components/collection-selector'
-import { auth as authApi, backup as backupApi, admin as adminApi } from '@/lib/api'
+import { auth as authApi, admin as adminApi } from '@/lib/api'
 import { resolveSupportedLang } from '@/lib/i18n'
-import { toast } from 'sonner'
 import { OnboardingTour } from '@/components/onboarding-tour'
 import { useTheme } from 'next-themes'
 import { accounts as accountsApi } from '@/lib/api'
@@ -52,6 +51,7 @@ import {
 } from 'lucide-react'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { ChangePasswordDialog } from '@/components/change-password-dialog'
+import { BackupDialog } from '@/components/backup-dialog'
 import { TwoFactorSetup } from '@/components/two-factor-setup'
 import { PasskeyManagementDialog } from '@/components/passkey-management-dialog'
 import { CommandPalette } from '@/components/command-palette'
@@ -98,13 +98,24 @@ export function AppLayout() {
   const [changePasswordOpen, setChangePasswordOpen] = useState(false)
   const [twoFactorOpen, setTwoFactorOpen] = useState(false)
   const [passkeysOpen, setPasskeysOpen] = useState(false)
-  const [backingUp, setBackingUp] = useState(false)
+  const [backupOpen, setBackupOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
   useCommandPaletteHotkey(setPaletteOpen)
   const { agentsEnabled } = useFeatureFlags()
-  const { hasModule, isLoading: workspaceLoading } = useWorkspace()
+  const { hasModule, isLoading: workspaceLoading, canWrite } = useWorkspace()
+  // The chat is offered only to members who can write. Sending a message
+  // reaches a tool set that persists — `propose_create_transaction` and its
+  // siblings — so the backend refuses it for a read-only role. Showing the
+  // panel anyway would put a raw `403: {"detail":"Read-only role"}` in front
+  // of the user, which is what happened before this guard.
+  //
+  // This costs a viewer the ability to *ask* questions, which is a real use
+  // case. Restoring it means making the agent's tools role-aware so a
+  // read-only session only exposes the reading ones; then this becomes
+  // `agentsEnabled` again.
+  const chatAvailable = agentsEnabled && canWrite
 
   // ⌘J / Ctrl+J toggles the global slide-over chat from anywhere.
   // Distinct from ⌘K (command palette) so users can have both open.
@@ -115,7 +126,7 @@ export function AppLayout() {
       setThemeBasedOnSystem(light, dark, resolvedTheme)
     }).catch(() => {})
     
-    if (!agentsEnabled) return
+    if (!chatAvailable) return
     const handler = (e: KeyboardEvent) => {
       const isMod = e.metaKey || e.ctrlKey
       if (isMod && (e.key === 'j' || e.key === 'J')) {
@@ -125,7 +136,7 @@ export function AppLayout() {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [agentsEnabled, resolvedTheme])
+  }, [chatAvailable, resolvedTheme])
   // The "Agents" management page used to live in the sidebar, but it's
   // a configuration surface (KB upload, providers, default selection),
   // not a daily destination. Moved to the user menu (Change password,
@@ -232,7 +243,7 @@ export function AppLayout() {
           {/* AI chat — opens the global slide-over (also reachable via
               ⌘J). Sits next to the theme toggle so the icon is always
               within thumb reach on mobile too. */}
-          {agentsEnabled && (
+          {chatAvailable && (
             <button
               onClick={() => setChatOpen(true)}
               className="text-sidebar-muted hover:text-sidebar-foreground transition-colors p-1"
@@ -249,18 +260,7 @@ export function AppLayout() {
             onTwoFactor={() => setTwoFactorOpen(true)}
             onPasskeys={() => setPasskeysOpen(true)}
             agentsEnabled={agentsEnabled}
-            backingUp={backingUp}
-            onBackup={async () => {
-              setBackingUp(true)
-              try {
-                await backupApi.download()
-                toast.success(t('backup.success'))
-              } catch {
-                toast.error(t('backup.error'))
-              } finally {
-                setBackingUp(false)
-              }
-            }}
+            onBackup={() => setBackupOpen(true)}
             dark
             isAdmin={user?.is_superuser}
           />
@@ -311,7 +311,7 @@ export function AppLayout() {
               {/* AI chat — same trigger as the mobile bar, ⌘J also
                   works. Lives in the sidebar header so the entry point
                   is visible even on first load (no floating button). */}
-              {agentsEnabled && (
+              {chatAvailable && (
                 <button
                   onClick={() => setChatOpen(true)}
                   className="text-sidebar-muted hover:text-sidebar-foreground transition-colors p-1 rounded-md hover:bg-sidebar-accent"
@@ -490,21 +490,10 @@ export function AppLayout() {
               account actions that used to live in a separate dropdown. */}
           <div className="px-3 pt-1">
             <WorkspaceSwitcher
-              backingUp={backingUp}
               onChangePassword={() => setChangePasswordOpen(true)}
               onTwoFactor={() => setTwoFactorOpen(true)}
               onPasskeys={() => setPasskeysOpen(true)}
-              onBackup={async () => {
-                setBackingUp(true)
-                try {
-                  await backupApi.download()
-                  toast.success(t('backup.success'))
-                } catch {
-                  toast.error(t('backup.error'))
-                } finally {
-                  setBackingUp(false)
-                }
-              }}
+              onBackup={() => setBackupOpen(true)}
               onUpdateAvailable={() => setUpdateDialogOpen(true)}
               agentsEnabled={agentsEnabled}
             />
@@ -539,6 +528,7 @@ export function AppLayout() {
         open={changePasswordOpen}
         onClose={() => setChangePasswordOpen(false)}
       />
+      <BackupDialog open={backupOpen} onClose={() => setBackupOpen(false)} />
       <TwoFactorSetup
         open={twoFactorOpen}
         onClose={() => setTwoFactorOpen(false)}
@@ -551,7 +541,7 @@ export function AppLayout() {
       {/* Slide-over global chat — opened from the sidebar pill or via
           ⌘J. The previous floating bottom-right button was removed
           since the entry point now lives in the sidebar next to ⌘K. */}
-      {agentsEnabled && <GlobalChatPanel open={chatOpen} onOpenChange={setChatOpen} />}
+      {chatAvailable && <GlobalChatPanel open={chatOpen} onOpenChange={setChatOpen} />}
       <UpdateAvailableDialog
         open={updateDialogOpen}
         onClose={() => setUpdateDialogOpen(false)}
@@ -567,7 +557,6 @@ function UserMenu({
   onTwoFactor,
   onPasskeys,
   onBackup,
-  backingUp,
   dark,
   isAdmin,
   agentsEnabled,
@@ -578,7 +567,6 @@ function UserMenu({
   onTwoFactor: () => void
   onPasskeys: () => void
   onBackup: () => void
-  backingUp: boolean
   dark?: boolean
   isAdmin?: boolean
   agentsEnabled?: boolean
@@ -638,12 +626,11 @@ function UserMenu({
           {t('auth.passkeysTitle')}
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={backingUp}
           onClick={onBackup}
           className="flex items-center gap-2"
         >
           <HardDriveDownload size={14} />
-          {backingUp ? t('backup.downloading') : t('backup.button')}
+          {t('backup.button')}
         </DropdownMenuItem>
         {agentsEnabled && (
           <DropdownMenuItem
