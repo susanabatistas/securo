@@ -4,14 +4,15 @@ server {
     index index.html;
 
     # API proxy to backend.
-    # Resolve the backend hostname at request time via Docker's embedded DNS
-    # instead of caching the IP at startup. Without this, Nginx pins the
-    # upstream IP when the config loads and returns 502s after the backend
-    # container is recreated with a new IP (e.g. selective redeploys where the
-    # frontend container is left running). Using a variable in proxy_pass forces
-    # re-resolution; the resolver below is the Docker daemon's internal DNS.
+    # Resolve the backend hostname at request time instead of caching the
+    # upstream IP when the config loads — otherwise Nginx returns 502s after
+    # the backend is recreated with a new IP (e.g. selective redeploys where
+    # the frontend container is left running). Using a variable in proxy_pass
+    # forces re-resolution via the resolver below; NGINX_RESOLVER defaults to
+    # Docker Compose's embedded DNS and is overridden (e.g. to a public
+    # resolver like 8.8.8.8) on platforms without it, such as Railway.
     location /api/ {
-        resolver 127.0.0.11 valid=5s;
+        resolver ${NGINX_RESOLVER} valid=5s;
         set $upstream ${BACKEND_URL};
         proxy_pass $upstream;
         proxy_set_header Host $host;
