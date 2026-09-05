@@ -3,7 +3,7 @@ from datetime import date as _date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class AssetCreate(BaseModel):
@@ -24,6 +24,7 @@ class AssetCreate(BaseModel):
     is_archived: bool = False
     position: int = 0
     group_id: Optional[uuid.UUID] = None
+    external_id: Optional[str] = None
     # Market-priced assets: ticker is enough to create one. The service
     # fetches the live quote on create and seeds the first AssetValue.
     ticker: Optional[str] = None
@@ -37,6 +38,18 @@ class AssetCreate(BaseModel):
     # Rebalancing target — this asset's target share (%) of its own wallet
     # (group_id), not of the total portfolio. Meaningless without a group.
     target_pct: Optional[Decimal] = None
+
+    @field_validator("external_id")
+    @classmethod
+    def normalize_external_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("external_id must not be blank")
+        if len(normalized) > 255:
+            raise ValueError("external_id must be at most 255 characters")
+        return normalized
 
 
 class AssetUpdate(BaseModel):
@@ -92,6 +105,7 @@ class AssetRead(BaseModel):
     gain_loss_primary: Optional[float] = None
     value_count: int = 0
     source: str = "manual"
+    external_id: Optional[str] = None
     connection_id: Optional[uuid.UUID] = None
     isin: Optional[str] = None
     maturity_date: Optional[_date] = None
