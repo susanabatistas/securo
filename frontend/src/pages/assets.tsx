@@ -70,6 +70,7 @@ import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
+import { getAssetProfit } from '@/lib/asset-profit'
 import { formatCurrency } from '@/lib/format'
 
 // Renders a logo image when one is available, falling back to the asset's
@@ -298,13 +299,7 @@ const HoldingRow = memo(function HoldingRow({
   const isMarketPriced = asset.valuation_method === 'market_price'
   const isProviderOwned = isSynced && !isMarketPriced
   const hasCost = asset.average_price != null && asset.total_invested != null
-  // Total return: price appreciation (gain_loss) plus proventos received
-  // (income_total), both already in the asset's own currency — same basis
-  // as total_invested, so no FX conversion is needed to combine them.
-  const returnPct =
-    hasCost && asset.gain_loss != null && asset.total_invested
-      ? ((asset.gain_loss + (asset.income_total ?? 0)) / asset.total_invested) * 100
-      : null
+  const profit = getAssetProfit(asset)
   const pctOfPortfolio =
     portfolioTotalPrimary > 0 && asset.current_value_primary != null
       ? (asset.current_value_primary / portfolioTotalPrimary) * 100
@@ -367,9 +362,16 @@ const HoldingRow = memo(function HoldingRow({
         </div>
         {/* Rentabilidade */}
         <div className="text-right tabular-nums">
-          {returnPct != null ? (
-            <span className={returnPct >= 0 ? 'text-emerald-600' : 'text-rose-500'}>
-              {returnPct >= 0 ? '+' : ''}{returnPct.toFixed(1)}%
+          {profit ? (
+            <span className={profit.amount >= 0 ? 'text-emerald-600' : 'text-rose-500'}>
+              <span className="block">
+                {profit.amount >= 0 ? '+' : ''}{mask(formatCurrency(profit.amount, asset.currency, locale))}
+              </span>
+              {profit.percentage != null && (
+                <span className="block text-[10px]">
+                  {profit.percentage >= 0 ? '+' : ''}{profit.percentage.toFixed(1)}%
+                </span>
+              )}
             </span>
           ) : <span className="text-muted-foreground">—</span>}
         </div>

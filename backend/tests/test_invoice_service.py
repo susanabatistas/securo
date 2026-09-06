@@ -19,7 +19,7 @@ from app.models.transaction import Transaction
 from app.models.workspace import Workspace, WorkspaceMember
 from app.services import invoice_service as svc
 
-TODAY = date(2026, 8, 26)
+TODAY = datetime.now(timezone.utc).date()
 
 
 def build_invoice(**overrides) -> Invoice:
