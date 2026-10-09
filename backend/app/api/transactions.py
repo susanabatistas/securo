@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.app_clock import app_today
 from app.core.database import get_async_session
 from app.core.workspace_context import (
     WorkspaceContext,
@@ -132,7 +133,7 @@ async def list_transactions(
     min_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount >= this value (primary currency)."),
     max_amount: Optional[float] = Query(None, ge=0, description="Filter to transactions with absolute amount <= this value (primary currency)."),
     sort_by: Optional[str] = Query(None, description="Column to sort by (date|amount|description|payee|category|account|type|status). Default: date desc."),
-    sort_dir: str = Query("desc", regex="^(asc|desc)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     ctx: WorkspaceContext = Depends(current_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):
@@ -250,7 +251,7 @@ async def export_transactions(
         ])
 
     output.seek(0)
-    today = date.today().isoformat()
+    today = app_today().isoformat()
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
@@ -569,7 +570,7 @@ async def unlink_recurring_transaction(
 @router.delete("/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_transaction(
     transaction_id: uuid.UUID,
-    apply_to: str = Query("this", regex="^(this|future|all)$", description="Installment-series scope: this row only (default), this + later installments, or the whole series. Ignored for non-installment transactions."),
+    apply_to: str = Query("this", pattern="^(this|future|all)$", description="Installment-series scope: this row only (default), this + later installments, or the whole series. Ignored for non-installment transactions."),
     ctx: WorkspaceContext = Depends(current_writable_workspace),
     session: AsyncSession = Depends(get_async_session),
 ):

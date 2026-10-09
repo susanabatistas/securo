@@ -46,11 +46,20 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
     amount_paid: '0.00',
     balance: '1000.00',
     days_overdue: 0,
+    amount_deducted: '0.00',
+    next_due_date: null,
+    installments: [],
+    deductions: [],
     notes: null,
     internal_notes: null,
     custom_fields: null,
     snapshot: null,
     share_token: null,
+    schedule_id: null,
+    schedule: null,
+    sequence: null,
+    period_start: null,
+    period_end: null,
     lines: [],
     allocations: [],
     created_at: '2026-08-01T00:00:00Z',
@@ -349,5 +358,20 @@ describe('documentProvenance', () => {
     expect(documentProvenance(null)).toEqual({ kind: 'uploaded' })
     expect(documentProvenance(undefined)).toEqual({ kind: 'uploaded' })
     expect(documentProvenance('   ')).toEqual({ kind: 'uploaded' })
+  })
+})
+
+describe('documentProvenance, on the page we drew ourselves', () => {
+  it('names it rather than printing the source id', () => {
+    // It read as the literal "De issued · Sep 02" on screen: a machine
+    // name is right for somebody else's integration and wrong for us.
+    expect(documentProvenance('issued')).toEqual({ kind: 'ours' })
+  })
+
+  it('still treats every other source as the system that sent it', () => {
+    expect(documentProvenance('issued-by-hand')).toEqual({
+      kind: 'system',
+      name: 'issued-by-hand',
+    })
   })
 })

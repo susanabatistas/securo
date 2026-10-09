@@ -71,6 +71,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { getAssetProfit } from '@/lib/asset-profit'
+import { getPortfolioShare, getPortfolioTotalPrimary } from '@/lib/asset-portfolio-share'
 import { formatCurrency } from '@/lib/format'
 
 // Renders a logo image when one is available, falling back to the asset's
@@ -300,10 +301,7 @@ const HoldingRow = memo(function HoldingRow({
   const isProviderOwned = isSynced && !isMarketPriced
   const hasCost = asset.average_price != null && asset.total_invested != null
   const profit = getAssetProfit(asset)
-  const pctOfPortfolio =
-    portfolioTotalPrimary > 0 && asset.current_value_primary != null
-      ? (asset.current_value_primary / portfolioTotalPrimary) * 100
-      : null
+  const pctOfPortfolio = asset.sell_date ? null : getPortfolioShare(asset, portfolioTotalPrimary)
   const needsBuys = isMarketPriced && !hasCost && !asset.sell_date
 
   return (
@@ -756,8 +754,15 @@ const AssetDialog = memo(function AssetDialog({
     }
   }
 
+  // Holdings driven by the transactions ledger: quantity, buy date and cost
+  // basis come from the transactions, not from this form.
+  const editingIsLedgerBacked = !!editingAsset
+    && editingAsset.valuation_method === 'market_price'
+    && (editingAsset.average_price != null || (editingAsset.transaction_count ?? 0) > 0)
+
   function buildPayload() {
     const isMarket = formMethod === 'market_price'
+    const ledgerBacked = editingIsLedgerBacked
     const payload: Record<string, unknown> = {
       name: formName,
       type: formType,
@@ -766,19 +771,24 @@ const AssetDialog = memo(function AssetDialog({
       valuation_method: formMethod,
     }
 
-    // Tickers have no total purchase price/date — the cost basis (and
-    // purchase_date = first buy) is owned by the transaction ledger,
-    // recomputed after every buy/sell (asset_transaction_service.
-    // recompute_and_cache). These 4 fields must be *omitted* here, not set
-    // to null: sending them (even as null) makes the backend's
-    // exclude_unset update apply them, silently wiping the ledger's cached
-    // cost basis on every unrelated edit (rename, wallet change, target %,
-    // ...) until the next transaction happens to recompute it.
-    if (!isMarket) {
+    // A ledger-backed holding derives its buy date, quantity and cost basis
+    // from its transactions, so an edit must not overwrite them.
+    if (!ledgerBacked) {
       payload.purchase_date = formPurchaseDate || null
+    }
+
+    // Tickers have no total purchase price: the cost basis is derived from
+    // the unit-price buy (and then the ledger). Only manual/growth assets
+    // carry a total purchase price and sale info. On edit a ticker leaves
+    // these fields untouched instead of clearing them.
+    if (!isMarket) {
       payload.purchase_price = formPurchasePrice ? parseFloat(formPurchasePrice) : null
       payload.sell_date = formSellDate || null
       payload.sell_price = formSellPrice ? parseFloat(formSellPrice) : null
+    } else if (!editingAsset) {
+      payload.purchase_price = null
+      payload.sell_date = null
+      payload.sell_price = null
     }
 
     if (formMethod === 'growth_rule') {
@@ -791,7 +801,9 @@ const AssetDialog = memo(function AssetDialog({
     if (isMarket) {
       payload.ticker = (selectedQuote?.symbol || formTickerQuery || '').toUpperCase()
       payload.ticker_exchange = selectedQuote?.exchange ?? null
-      payload.units = formUnits ? parseFloat(formUnits) : null
+      if (!ledgerBacked) {
+        payload.units = formUnits ? parseFloat(formUnits) : null
+      }
       // Opening buy price per unit (defaults to the live quote on the server
       // when omitted). Only meaningful on create.
       if (!editingAsset) {
@@ -1131,7 +1143,7 @@ const AssetDialog = memo(function AssetDialog({
                 ) : (
                   <div className="space-y-2">
                     <Label htmlFor="asset-units">{t('assets.quantity')}</Label>
-                    <Input id="asset-units" type="number" step="any" min="0" value={formUnits} onChange={e => setFormUnits(e.target.value)} placeholder="10" />
+                    <Input id="asset-units" type="number" step="any" min="0" value={formUnits} onChange={e => setFormUnits(e.target.value)} placeholder="10" disabled={editingIsLedgerBacked} />
                   </div>
                 )}
 
@@ -1214,7 +1226,7 @@ const AssetDialog = memo(function AssetDialog({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="asset-purchase-date">{t('assets.purchaseDate')}</Label>
-                <DatePickerInput id="asset-purchase-date" value={formPurchaseDate} onChange={setFormPurchaseDate} />
+                <DatePickerInput id="asset-purchase-date" value={formPurchaseDate} onChange={setFormPurchaseDate} disabled={editingIsLedgerBacked} />
               </div>
               {formMethod !== 'market_price' && (
                 <div className="space-y-2">
@@ -1495,10 +1507,7 @@ export default function AssetsPage() {
   )
   // Portfolio total in the user's primary currency — denominator for the
   // "% da carteira" column in the holdings table.
-  const portfolioTotalPrimary = activeAssets.reduce(
-    (acc, a) => acc + Number(a.current_value_primary ?? a.current_value ?? 0),
-    0,
-  )
+  const portfolioTotalPrimary = getPortfolioTotalPrimary(activeAssets)
   const byType: Record<string, number> = {}
   for (const a of activeAssets as Array<{ type?: string; current_value?: number | null }>) {
     if (!a.type) continue
@@ -3544,7 +3553,9 @@ function AddHoldingTransactionDialog({
   const [fee, setFee] = useState('')
   const [date, setDate] = useState(localDateString)
 
-  useEffect(() => {
+  const [formSource, setFormSource] = useState<{ assetId: typeof assetId } | null>(null)
+  if (!formSource || formSource.assetId !== assetId) {
+    setFormSource({ assetId })
     if (assetId) {
       setKind('buy')
       setQuantity('')
@@ -3552,7 +3563,7 @@ function AddHoldingTransactionDialog({
       setFee('')
       setDate(localDateString())
     }
-  }, [assetId])
+  }
 
   const saveMutation = useMutation({
     mutationFn: () =>

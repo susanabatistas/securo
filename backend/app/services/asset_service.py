@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.core.app_clock import app_today
 from app.models.asset import Asset
 from app.models.asset_income import AssetIncome
 from app.models.asset_transaction import AssetTransaction
@@ -24,6 +25,7 @@ from app.providers.market_price import (
 )
 from app.schemas.asset import AssetCreate, AssetUpdate, AssetValueCreate, AssetRead, AssetValueRead
 from app.services.asset_classification import resolve_tax_category
+from app.services.asset_group_service import ensure_group_in_workspace
 from app.services.fx_rate_service import convert, stamp_primary_amount
 
 logger = logging.getLogger(__name__)
@@ -83,7 +85,7 @@ def _generate_growth_values(
     When growth_start_date is set, growth iteration begins from that date — not
     from base_date — so the asset accrues no growth for the gap between
     purchase and the configured growth start."""
-    today = date.today()
+    today = app_today()
     if growth_start_date and today < growth_start_date:
         return []
 
@@ -606,6 +608,7 @@ async def create_asset(
     market_provider: Optional[MarketPriceProvider] = None,
 ) -> AssetRead:
     """Create an asset, optionally with an initial value."""
+    await ensure_group_in_workspace(session, data.group_id, workspace_id)
     # Market-priced path: fetch a live quote first so we can derive currency
     # and the initial value from the ticker. Validate up-front rather than
     # half-creating an asset and failing on a 5xx from Yahoo.
@@ -613,12 +616,12 @@ async def create_asset(
     if data.valuation_method == "market_price":
         if not data.ticker:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="ticker is required for market_price assets",
             )
         if data.units is None or data.units <= 0:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="units (quantity) must be > 0 for market_price assets",
             )
         provider = market_provider or get_market_price_provider()
@@ -711,7 +714,7 @@ async def create_asset(
                 asset_id=asset.id,
                 amount=initial_amount,
                 price=Decimal(str(quote.price)),
-                date=date.today(),
+                date=app_today(),
                 source="sync",
             )
         )
@@ -722,13 +725,13 @@ async def create_asset(
         value = AssetValue(
             asset_id=asset.id,
             amount=data.current_value,
-            date=date.today(),
+            date=app_today(),
             source="manual",
         )
         session.add(value)
     elif data.valuation_method == "growth_rule" and data.purchase_price is not None:
         # Seed the initial value from purchase price
-        base_date = data.purchase_date or data.growth_start_date or date.today()
+        base_date = data.purchase_date or data.growth_start_date or app_today()
         seed = AssetValue(
             asset_id=asset.id,
             amount=data.purchase_price,
@@ -775,7 +778,7 @@ async def create_asset(
                 quantity=Decimal(str(data.units)),
                 price=buy_price,
                 fee=Decimal("0"),
-                date=data.purchase_date or date.today(),
+                date=data.purchase_date or app_today(),
                 source="manual",
             )
         )
@@ -802,6 +805,17 @@ async def create_asset(
     return _asset_to_read(asset, latest, count, tx_count or 0)
 
 
+# Fields a ledger-backed holding derives from its transactions (see
+# asset_transaction_service.recompute_and_cache); an asset update ignores them.
+_LEDGER_DERIVED_FIELDS = (
+    "units",
+    "purchase_price",
+    "purchase_date",
+    "sell_date",
+    "sell_price",
+)
+
+
 async def update_asset(
     session: AsyncSession,
     asset_id: uuid.UUID,
@@ -819,8 +833,23 @@ async def update_asset(
         return None
 
     update_data = data.model_dump(exclude_unset=True)
+    if "group_id" in update_data:
+        await ensure_group_in_workspace(session, update_data["group_id"], workspace_id)
     # Prevent changing valuation_method on existing assets
     update_data.pop("valuation_method", None)
+
+    tx_count = await session.scalar(
+        select(func.count()).select_from(AssetTransaction).where(AssetTransaction.asset_id == asset.id)
+    ) or 0
+    # Ledger-backed holdings derive their position (units, cost basis, buy and
+    # sell dates) from the transactions ledger. Editing the holding itself
+    # (e.g. renaming it) must never overwrite those cached values, or the cost
+    # basis is lost and the holding looks like it has no buys (issue #965).
+    is_ledger = asset.average_price is not None or tx_count > 0
+    if is_ledger:
+        for key in _LEDGER_DERIVED_FIELDS:
+            update_data.pop(key, None)
+
     for key, value in update_data.items():
         setattr(asset, key, value)
 
@@ -840,7 +869,7 @@ async def update_asset(
         )
         # Regenerate from purchase_price
         if asset.purchase_price and asset.growth_type and asset.growth_rate and asset.growth_frequency:
-            base_date = asset.purchase_date or asset.growth_start_date or date.today()
+            base_date = asset.purchase_date or asset.growth_start_date or app_today()
             backfill = _generate_growth_values(
                 asset_id=asset.id,
                 base_amount=float(asset.purchase_price),
@@ -883,7 +912,7 @@ async def update_asset(
     latest = await _get_latest_value(session, asset.id)
     count = await _get_value_count(session, asset.id)
     income_total = (await _bulk_income_totals(session, [asset.id])).get(asset.id)
-    return _asset_to_read(asset, latest, count, income_total=income_total)
+    return _asset_to_read(asset, latest, count, tx_count, income_total)
 
 
 async def delete_asset(
@@ -1276,7 +1305,7 @@ async def _apply_price_to_asset(
     if not asset.units or asset.units <= 0:
         return
 
-    today = value_date or date.today()
+    today = value_date or app_today()
     new_amount = new_price * Decimal(str(asset.units))
     existing = await session.execute(
         select(AssetValue)

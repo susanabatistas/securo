@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.app_clock import app_today
 from app.core.auth import current_active_user
 from app.core.database import get_async_session
 from app.core.workspace_context import WorkspaceContext, current_workspace
@@ -123,7 +124,7 @@ async def _collect(ctx: WorkspaceContext, session: AsyncSession) -> dict[str, ob
 
 
 def _as_download(archive: bytes) -> StreamingResponse:
-    today = date.today().isoformat()
+    today = app_today().isoformat()
     return StreamingResponse(
         iter([archive]),
         media_type="application/zip",
