@@ -5,13 +5,14 @@ from decimal import Decimal
 from typing import Any, Optional, cast
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.app_clock import app_today
-from app.models.asset import Asset
+from app.models.account import Account
+from app.models.asset import ASSET_PRICE_DECIMALS, LOAN_COLLATERAL_TYPES, Asset
 from app.models.asset_income import AssetIncome
 from app.models.asset_transaction import AssetTransaction
 from app.models.asset_value import AssetValue
@@ -26,7 +27,7 @@ from app.providers.market_price import (
 from app.schemas.asset import AssetCreate, AssetUpdate, AssetValueCreate, AssetRead, AssetValueRead
 from app.services.asset_classification import resolve_tax_category
 from app.services.asset_group_service import ensure_group_in_workspace
-from app.services.fx_rate_service import convert, stamp_primary_amount
+from app.services.fx_rate_service import convert, has_rate, stamp_primary_amount
 
 logger = logging.getLogger(__name__)
 
@@ -853,6 +854,15 @@ async def update_asset(
     for key, value in update_data.items():
         setattr(asset, key, value)
 
+    # Only a property or a vehicle can secure a loan, so an asset that changes
+    # to another type releases its loans instead of leaving them linked to it.
+    if asset.type not in LOAN_COLLATERAL_TYPES:
+        await session.execute(
+            sa_update(Account)
+            .where(Account.secured_asset_id == asset.id)
+            .values(secured_asset_id=None)
+        )
+
     # Regenerate growth-rule values if requested
     if regenerate_growth and asset.valuation_method == "growth_rule":
         # Delete all rule-generated values
@@ -1064,6 +1074,24 @@ async def get_portfolio_trend(
     user = await session.get(User, user_id) if user_id is not None else None
     primary_currency = user.primary_currency if user else get_settings().default_currency
 
+    # Assets whose currency has no resolvable FX rate cannot be expressed in
+    # the primary currency. Excluding them keeps the chart's total honest
+    # instead of summing raw foreign amounts at a fake 1:1 rate (issue
+    # #574); the holdings table still shows them in their original currency
+    # flagged as unconverted.
+    # One lookup per distinct currency: a missing rate can trigger a
+    # provider sync, which must not repeat for every asset in it.
+    convertible_currencies = {primary_currency}
+    for currency in {asset.currency for asset in active_assets} - {primary_currency}:
+        if await has_rate(session, currency, primary_currency):
+            convertible_currencies.add(currency)
+    convertible_assets = [
+        asset for asset in active_assets if asset.currency in convertible_currencies
+    ]
+    if not convertible_assets:
+        return {"assets": [], "trend": [], "total": 0.0}
+    active_assets = convertible_assets
+
     values_map = await _load_asset_native_values(session, active_assets)
 
     # Bulk-load transactions for the cost-basis (invested capital) series —
@@ -1159,7 +1187,7 @@ async def get_portfolio_trend(
 
     for d in sorted_dates:
         row: dict[str, object] = {"date": d.isoformat()}
-        date_total = 0.0
+        date_total = Decimal("0")
         date_invested = 0.0
         for aid in [a["id"] for a in asset_meta]:
             if d in value_lookup[aid]:
@@ -1192,17 +1220,20 @@ async def get_portfolio_trend(
                 rate = _cross_rate(rate_series, currency, primary_currency, d)
                 # Same fallback as fx_rate_service.get_rate: no resolvable
                 # rate → treat as 1:1 rather than dropping the value.
-                factor = float(rate) if rate is not None else 1.0
-                val = round(native * factor, 2)
-                invested_val = round(native_invested * factor, 2)
+                factor = rate if rate is not None else Decimal("1")
+                # Decimal so sub-cent holdings still add up in the total.
+                val = Decimal(str(native)) * factor
+                invested_val = native_invested * float(factor)
             else:
-                val = round(native, 2)
-                invested_val = round(native_invested, 2)
+                val = Decimal(str(native))
+                invested_val = native_invested
 
-            row[aid] = val
+            # Each series point is shown in monetary decimals, but the total
+            # sums the unrounded values so sub-cent holdings still add up.
+            row[aid] = round(float(val), 2)
             date_total += val
             date_invested += invested_val
-        row["_total"] = round(date_total, 2)
+        row["_total"] = float(date_total.quantize(Decimal("0.01")))
         row["_invested"] = round(date_invested, 2)
         trend.append(row)
 
@@ -1277,7 +1308,8 @@ async def get_asset_values_at(
 
         if primary_currency is not None:
             converted, _ = await convert(
-                session, Decimal(str(amount)), asset.currency, primary_currency, as_of_date
+                session, Decimal(str(amount)), asset.currency, primary_currency, as_of_date,
+                decimals=ASSET_PRICE_DECIMALS,
             )
             primary_total += float(converted)
 

@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { useDisplayLocale, useDateLocale } from '@/hooks/use-display-locale'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRegisterPageChatContext } from '@/lib/page-chat-context'
-import { assets, assetGroups, currencies as currenciesApi, marketIndices } from '@/lib/api'
+import { accounts as accountsApi, assets, assetGroups, currencies as currenciesApi, marketIndices } from '@/lib/api'
 import { localDateString } from '@/lib/date-utils'
 import { resolveAssetType } from '@/lib/asset-classification'
 import { StockChecklistSection } from '@/components/assets/stock-checklist-section'
@@ -26,7 +26,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DatePickerInput } from '@/components/ui/date-picker-input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import type { Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote, CdiMonthlyPoint } from '@/types'
+import type { Account, Asset, AssetGroup, AssetTransaction, AssetValue, MarketSymbolMatch, MarketSymbolQuote, CdiMonthlyPoint } from '@/types'
 import { TAX_CATEGORIES } from '@/types'
 import {
   Home,
@@ -66,12 +66,15 @@ import {
 } from 'recharts'
 import { useNavigate } from 'react-router-dom'
 import { PageHeader } from '@/components/page-header'
+import { PropertyEquitySummary } from '@/components/property-equity-summary'
+import { LOAN_COLLATERAL_TYPES } from '@/lib/property-equity'
 import { usePrivacyMode } from '@/hooks/use-privacy-mode'
 import { useAuth } from '@/contexts/auth-context'
 import { useWorkspace } from '@/contexts/workspace-context'
 import { useCollectionFilter } from '@/contexts/collection-filter-context'
 import { getAssetProfit } from '@/lib/asset-profit'
-import { getPortfolioShare, getPortfolioTotalPrimary } from '@/lib/asset-portfolio-share'
+import { getAssetValuePrimary, getPortfolioShare, getPortfolioTotalPrimary } from '@/lib/asset-portfolio-share'
+import { formatTransactionTotal, getTransactionTotalCurrency } from '@/lib/asset-transaction-total'
 import { formatCurrency } from '@/lib/format'
 
 // Renders a logo image when one is available, falling back to the asset's
@@ -212,7 +215,7 @@ function isOversell(kind: 'buy' | 'sell', quantity: string, heldUnits: number): 
 // The ledger total preview ("qty × price ± fee") shown in both buy/sell
 // dialogs — identical math and markup, kept in one place so they can't drift.
 function TxTotalPreview({ quantity, price, fee, kind, currency, locale }: {
-  quantity: string; price: string; fee: string; kind: 'buy' | 'sell'; currency: string; locale: string
+  quantity: string; price: string; fee: string; kind: 'buy' | 'sell'; currency: string | null; locale: string
 }) {
   const { t } = useTranslation()
   if (!quantity || !price || parseFloat(quantity) <= 0) return null
@@ -220,7 +223,7 @@ function TxTotalPreview({ quantity, price, fee, kind, currency, locale }: {
   return (
     <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-muted/30">
       <span className="text-xs font-medium text-muted-foreground">{t('assets.txTotal')}</span>
-      <span className="text-sm font-bold tabular-nums text-foreground">{formatCurrency(total, currency, locale)}</span>
+      <span className="text-sm font-bold tabular-nums text-foreground">{formatTransactionTotal(total, currency, locale)}</span>
     </div>
   )
 }
@@ -277,6 +280,7 @@ const HoldingRow = memo(function HoldingRow({
   onEdit,
   onDelete,
   onChanged,
+  loans,
 }: {
   asset: Asset
   portfolioTotalPrimary: number
@@ -292,6 +296,7 @@ const HoldingRow = memo(function HoldingRow({
   onEdit: (asset: Asset) => void
   onDelete: (id: string) => void
   onChanged: () => void
+  loans: Account[]
 }) {
   const { t } = useTranslation()
   const config = getTypeConfig(asset.type)
@@ -301,7 +306,14 @@ const HoldingRow = memo(function HoldingRow({
   const isProviderOwned = isSynced && !isMarketPriced
   const hasCost = asset.average_price != null && asset.total_invested != null
   const profit = getAssetProfit(asset)
-  const pctOfPortfolio = asset.sell_date ? null : getPortfolioShare(asset, portfolioTotalPrimary)
+  // Foreign-currency asset the backend could not convert (no FX rate):
+  // keep it out of primary-currency totals and flag it instead.
+  const unconverted =
+    !asset.sell_date &&
+    asset.current_value != null &&
+    asset.currency !== userCurrency &&
+    asset.current_value_primary == null
+  const pctOfPortfolio = asset.sell_date ? null : getPortfolioShare(asset, portfolioTotalPrimary, userCurrency)
   const needsBuys = isMarketPriced && !hasCost && !asset.sell_date
 
   return (
@@ -325,6 +337,16 @@ const HoldingRow = memo(function HoldingRow({
                 >
                   <AlertTriangle size={9} />
                   {t('assets.noPriceBadge')}
+                </Badge>
+              )}
+              {unconverted && (
+                <Badge
+                  variant="outline"
+                  className="text-[9px] px-1 py-0 text-amber-600 border-amber-300 bg-amber-50 dark:bg-amber-950/30 gap-0.5 shrink-0"
+                  title={t('assets.noFxRateTitle')}
+                >
+                  <AlertTriangle size={9} />
+                  {t('assets.noFxRate')}
                 </Badge>
               )}
               {asset.sell_date && (
@@ -381,6 +403,9 @@ const HoldingRow = memo(function HoldingRow({
               {asset.current_value_primary != null && asset.currency !== userCurrency && (
                 <span className="block text-[10px] text-muted-foreground">{mask(formatCurrency(asset.current_value_primary, userCurrency, locale))}</span>
               )}
+              {unconverted && (
+                <span className="block text-[10px] text-amber-600 dark:text-amber-400">{t('assets.noFxRate')}</span>
+              )}
             </>
           ) : <span className="text-muted-foreground">—</span>}
         </div>
@@ -407,6 +432,15 @@ const HoldingRow = memo(function HoldingRow({
         </div>
       </div>
 
+      {isExpanded && LOAN_COLLATERAL_TYPES.includes(asset.type) && (
+        <PropertyEquitySummary
+          asset={asset}
+          loans={loans}
+          currency={userCurrency}
+          locale={locale}
+          mask={mask}
+        />
+      )}
       {isExpanded && (
         isMarketPriced ? (
           <>
@@ -871,7 +905,7 @@ const AssetDialog = memo(function AssetDialog({
           <DialogHeader>
             <DialogTitle>{editingAsset ? t('assets.editAsset') : t('assets.addAsset')}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             {/* Name */}
             <div className="space-y-2">
               <Label htmlFor="asset-name">{t('assets.name')}</Label>
@@ -1399,6 +1433,12 @@ export default function AssetsPage() {
     queryKey: ['assets'],
     queryFn: () => assets.list(false),
   })
+  // Loans secured against a property show up in that property's detail.
+  const { data: accountsList } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => accountsApi.list(),
+  })
+  const loanAccounts = useMemo(() => accountsList ?? [], [accountsList])
 
   // Active Collection filter (issue #105): when a collection is active, scope
   // the Assets page to the assets in its wallets (asset_groups). A collection
@@ -1507,7 +1547,22 @@ export default function AssetsPage() {
   )
   // Portfolio total in the user's primary currency — denominator for the
   // "% da carteira" column in the holdings table.
-  const portfolioTotalPrimary = getPortfolioTotalPrimary(activeAssets)
+  // Assets with no resolvable FX rate are left out of the denominator
+  // (their rows show a dash) instead of being summed at a fake 1:1 rate
+  // (issue #574).
+  const portfolioTotalPrimary = getPortfolioTotalPrimary(activeAssets, userCurrency)
+
+  // Currencies of active assets that cannot be converted to the user's
+  // display currency: shown in a page-level banner and kept out of totals.
+  const unconvertedCurrencies = useMemo(() => {
+    const currencies = new Set<string>()
+    for (const a of activeAssets) {
+      if (a.current_value != null && a.currency !== userCurrency && a.current_value_primary == null) {
+        currencies.add(a.currency)
+      }
+    }
+    return [...currencies].sort()
+  }, [activeAssets, userCurrency])
   const byType: Record<string, number> = {}
   for (const a of activeAssets as Array<{ type?: string; current_value?: number | null }>) {
     if (!a.type) continue
@@ -1668,6 +1723,7 @@ export default function AssetsPage() {
               onEdit={openAssetDialog}
               onDelete={setDeletingId}
               onChanged={refetchAssetViews}
+              loans={loanAccounts}
             />
           ))}
         </div>
@@ -1738,8 +1794,18 @@ export default function AssetsPage() {
     // Fall back to the wallet's own rollup only when there are no assets to
     // sum locally — a genuine zero total from `reduce` must not be treated
     // as falsy and overridden by a possibly-stale backend value.
-    const perAssetTotal = walletAssets.reduce((s, a) => s + (a.current_value_primary ?? a.current_value ?? 0), 0)
-    const total = walletAssets.length > 0 ? perAssetTotal : (wallet.current_value_primary ?? wallet.current_value ?? 0)
+    const perAssetTotal = walletAssets.reduce((s, a) => s + (getAssetValuePrimary(a, userCurrency) ?? 0), 0)
+    const total = walletAssets.length > 0 ? perAssetTotal : (wallet.current_value_primary ?? 0)
+    // Native values of assets the backend could not convert (no FX rate),
+    // grouped by currency and listed below the total. They are deliberately
+    // NOT added to the number above: that would mix unconverted currencies
+    // (issue #574).
+    const unconvertedSums = new Map<string, number>()
+    for (const a of walletAssets) {
+      if (getAssetValuePrimary(a, userCurrency) == null && a.current_value != null && a.currency !== userCurrency) {
+        unconvertedSums.set(a.currency, (unconvertedSums.get(a.currency) ?? 0) + Number(a.current_value))
+      }
+    }
 
     // Only show the institution as a subtitle when it's actually
     // additional information — if the user hasn't renamed the wallet,
@@ -1788,9 +1854,16 @@ export default function AssetsPage() {
               )}
             </div>
           </button>
-          <span className="text-sm font-bold tabular-nums text-foreground shrink-0">
-            {mask(formatCurrency(total, userCurrency, locale))}
-          </span>
+          <div className="flex flex-col items-end shrink-0">
+            <span className="text-sm font-bold tabular-nums text-foreground">
+              {mask(formatCurrency(total, userCurrency, locale))}
+            </span>
+            {[...unconvertedSums.entries()].map(([currency, amount]) => (
+              <span key={currency} className="text-[10px] text-amber-600 dark:text-amber-400 tabular-nums">
+                + {mask(formatCurrency(amount, currency, locale))} {currency} · {t('assets.noFxRate')}
+              </span>
+            ))}
+          </div>
           {canWrite && (
             <>
               <button
@@ -1935,6 +2008,15 @@ export default function AssetsPage() {
         )
       ) : (
       <>
+      {/* Assets that have no resolvable FX rate are left out of the totals
+          below; explain that so the numbers do not look wrong (issue #574). */}
+      {unconvertedCurrencies.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>{t('assets.fxRateMissing', { currencies: unconvertedCurrencies.join(', ') })}</span>
+        </div>
+      )}
+
       {/* Portfolio Chart */}
       {chartFocusWalletId && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -3181,7 +3263,9 @@ function AssetTransactionsTab({
   // fresh sell into an existing holding; edits are validated server-side.
   const selectedHolding = marketHoldings.find((h) => h.id === formHolding)
   const selectedHeldUnits = selectedHolding?.units ?? 0
-  const selectedCurrency = (editingTx ? holdings.find((h) => h.id === editingTx.asset_id)?.currency : selectedHolding?.currency) ?? 'USD'
+  // Null while a new ticker has no currency yet — the total then shows as a
+  // bare amount instead of guessing one.
+  const selectedCurrency = getTransactionTotalCurrency(holdings, editingTx ? editingTx.asset_id : formHolding, editingTx)
   const oversell =
     !editingTx && !isNewTicker && isOversell(formKind, formQuantity, selectedHeldUnits)
   const canSave =
@@ -3243,9 +3327,9 @@ function AssetTransactionsTab({
         </div>
       ) : (txs ?? []).length === 0 ? (
         holdingsWithoutCost.length === 0 ? (
-          <div className="text-center py-16">
-            <TrendingUp className="mx-auto h-12 w-12 text-muted-foreground/40 mb-3" />
-            <p className="text-muted-foreground">{t('assets.noTransactions')}</p>
+          <div className="bg-card rounded-xl border border-border shadow-sm overflow-hidden text-center py-16 text-muted-foreground">
+            <TrendingUp size={32} className="mx-auto mb-2 opacity-50" />
+            <p>{t('assets.noTransactions')}</p>
           </div>
         ) : null
       ) : (

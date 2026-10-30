@@ -6,13 +6,13 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import String, select, desc, func, case
+from sqlalchemy import String, select, desc, func, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.app_clock import app_today
 from app.core.config import get_settings
 from app.models.account import Account
-from app.models.asset import Asset
+from app.models.asset import ASSET_PRICE_DECIMALS, Asset
 from app.models.asset_value import AssetValue
 from app.models.transaction import Transaction
 from app.models.category import Category
@@ -37,6 +37,7 @@ from app.schemas.report import (
 )
 from app.services import invoice_forecast_service
 from app.services.dashboard_service import (
+    _account_balance_at,
     _counts_as_user_pnl_row,
     _get_forecast_transactions,
     _get_open_accounts,
@@ -49,6 +50,7 @@ _ACCOUNT_TYPE_COLORS: dict[str, str] = {
     "checking": "#6366F1",
     "savings": "#3B82F6",
     "credit_card": "#F43F5E",
+    "loan": "#F43F5E",
     "investment": "#8B5CF6",
     "wallet": "#F59E0B",
 }
@@ -140,7 +142,9 @@ async def _load_account_balances(
         .join(Account, Transaction.account_id == Account.id)
         .where(
             Transaction.account_id.in_(account_ids),
-            Transaction.date <= up_to,
+            # Connected accounts walk back from today's provider balance, so
+            # their history must run to today even for a past cutoff.
+            Transaction.date <= max(up_to, app_today()),
             Transaction.is_ignored == False,
         )
         .group_by(Transaction.account_id, Transaction.date)
@@ -174,8 +178,12 @@ def _account_balance_at_cached(
     cum_up_to_cutoff = h.cumulative[index] if index >= 0 else 0.0
     if account.connection_id:
         current_bal = float(account.balance)
-        if account.type == "credit_card":
+        if account.type in {"credit_card", "loan"}:
             current_bal = -current_bal
+        # The provider balance is authoritative today, as in
+        # dashboard_service._account_balance_at.
+        if cutoff >= app_today():
+            return current_bal
         return current_bal - (h.total - cum_up_to_cutoff)
     return cum_up_to_cutoff
 
@@ -254,7 +262,8 @@ async def _asset_value_at(
         amount = _asset_amount_at(asset, values.get(asset.id, []), cutoff)
         if amount > 0:
             converted, _ = await convert(
-                session, Decimal(str(amount)), asset.currency, primary_currency, cutoff
+                session, Decimal(str(amount)), asset.currency, primary_currency, cutoff,
+                decimals=ASSET_PRICE_DECIMALS,
             )
             total += float(converted)
     return total
@@ -304,17 +313,36 @@ async def _net_worth_at(
     liabilities_total = 0.0
     composition: list[ReportCompositionItem] = []
 
+    # Cards on one consolidated credit line (same shared_balance_group) each
+    # carry the whole line's debt, so they are summed as one item, the same way
+    # the dashboard's _total_balance_by_currency does. Only credit cards: an
+    # account retyped to checking keeps its group but no longer shares the debt.
+    grouped: dict[str, list[Account]] = {}
     for account in accounts:
-        bal = _account_balance_at_cached(account, balance_histories.get(account.id), cutoff)
+        shared = account.shared_balance_group if account.type == "credit_card" else None
+        grouped.setdefault(shared or str(account.id), []).append(account)
+
+    for key, group in grouped.items():
+        account = group[0]
+        bal = 0.0
+        for member in group:
+            bal += _account_balance_at_cached(member, balance_histories.get(member.id), cutoff)
+        if len(group) > 1 and account.shared_balance_group:
+            # Each card's balance at the cutoff is the shared debt today minus
+            # that card's own activity since, so the duplicates to strip are
+            # today's shared debt once per extra card.
+            current_shared = await _account_balance_at(session, account, app_today())
+            bal -= current_shared * (len(group) - 1)
+        label = " + ".join(get_account_name(member) for member in group)
         converted_val = _convert_cached(
             rate_series, Decimal(str(abs(bal))), account.currency, primary_currency, cutoff
         )
-        if account.type == "credit_card" or bal < 0:
+        if account.type in {"credit_card", "loan"} or bal < 0:
             liabilities_total += converted_val
             if converted_val > 0:
                 composition.append(ReportCompositionItem(
-                    key=str(account.id),
-                    label=get_account_name(account),
+                    key=key,
+                    label=label,
                     value=round(converted_val, 2),
                     color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
                     group="liabilities",
@@ -323,23 +351,27 @@ async def _net_worth_at(
             accounts_total += converted_val
             if converted_val > 0:
                 composition.append(ReportCompositionItem(
-                    key=str(account.id),
-                    label=get_account_name(account),
+                    key=key,
+                    label=label,
                     value=round(converted_val, 2),
                     color=_ACCOUNT_TYPE_COLORS.get(account.type, "#6B7280"),
                     group="accounts",
                 ))
 
     # Per-asset composition at the cutoff date
-    assets_total = 0.0
+    # Decimal until the one final rounding: sub-cent holdings must add up
+    # exactly the way the wallet rollup does.
+    assets_sum = Decimal("0")
     for asset in assets:
         amount = _asset_amount_at(asset, asset_values.get(asset.id, []), cutoff)
         if amount > 0:
-            converted_val = round(
-                _convert_cached(rate_series, Decimal(str(amount)), asset.currency, primary_currency, cutoff),
-                2,
-            )
-            assets_total += converted_val
+            if asset.currency == primary_currency:
+                converted = Decimal(str(amount))
+            else:
+                rate = _cross_rate(rate_series, asset.currency, primary_currency, cutoff) or Decimal("1")
+                converted = Decimal(str(amount)) * rate
+            converted_val = round(float(converted), 2)
+            assets_sum += converted
             composition.append(ReportCompositionItem(
                 key=str(asset.id),
                 label=asset.name,
@@ -348,6 +380,7 @@ async def _net_worth_at(
                 group="assets",
             ))
 
+    assets_total = float(assets_sum.quantize(Decimal("0.01")))
     net_worth = accounts_total + assets_total - liabilities_total
 
     return ReportDataPoint(
@@ -419,6 +452,37 @@ def _date_points(
             points.append(end)
 
     return points
+
+
+async def get_report_data_range(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+) -> tuple[date | None, date | None]:
+    """The span of transaction data the workspace actually has (issue #765).
+
+    Feeds the Reports page year picker: the UI lists one entry per year
+    between the lower bound and the current year. Buckets by the same
+    reporting date the reports aggregate on, so a year only shows up when
+    the reports can actually display it. Opening balances are excluded,
+    their dates are synthetic. Ignored transactions and transactions in
+    ignored categories are excluded too, as every report tab drops them.
+    """
+    accounting_mode = await get_credit_card_accounting_mode(session)
+    result = await session.execute(
+        select(
+            func.min(reporting_date_col(accounting_mode)),
+            func.max(reporting_date_col(accounting_mode)),
+        )
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .where(
+            Transaction.workspace_id == workspace_id,
+            Transaction.source != "opening_balance",
+            Transaction.is_ignored.is_(False),
+            or_(Transaction.category_id.is_(None), Category.is_ignored.is_(False)),
+        )
+    )
+    min_date, max_date = result.one()
+    return min_date, max_date
 
 
 async def get_net_worth_report(
@@ -610,10 +674,8 @@ async def get_income_expenses_report(
             func.sum(case((Transaction.type == "credit", amount_expr), else_=0)),
             func.sum(case((Transaction.type == "debit", amount_expr), else_=0)),
         )
-        .join(Account, Transaction.account_id == Account.id)
         .where(
             Transaction.workspace_id == workspace_id,
-            Account.is_closed == False,
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
@@ -946,11 +1008,9 @@ async def get_income_expenses_report(
             func.sum(amount_expr),
         )
         .select_from(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
-            Account.is_closed == False,
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
@@ -984,6 +1044,7 @@ async def get_income_expenses_report(
         session, user_id, start, axis_end + timedelta(days=1),
         use_effective_date=accounting_mode == "accrual",
         primary_currency=primary_currency,
+        workspace_id=workspace_id,
     )
     for cat_uuid, offset_total in full_range_offset.items():
         cat_key = str(cat_uuid) if cat_uuid else "uncategorized"
@@ -1009,11 +1070,9 @@ async def get_income_expenses_report(
             func.sum(amount_expr),
         )
         .select_from(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
         .join(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
-            Account.is_closed == False,
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
@@ -1049,11 +1108,9 @@ async def get_income_expenses_report(
             func.sum(amount_expr),
         )
         .select_from(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
         .outerjoin(Category, Transaction.category_id == Category.id)
         .where(
             Transaction.workspace_id == workspace_id,
-            Account.is_closed == False,
             report_date >= start,
             report_date <= axis_end,
             Transaction.source != "opening_balance",
@@ -1758,7 +1815,14 @@ async def get_cash_flow_report(
     # Forward walk: balance(d+1) = balance(d) + net_flow(d+1). Pending rows
     # already due are part of the projected starting position, not a second
     # dated flow in the future.
+    #
+    # The walk also tracks the runway: the first day the projected balance
+    # drops below zero, and the lowest point of the horizon. Both are taken
+    # from the daily walk so a dip inside a week or month still counts when
+    # the chart is aggregated to a coarser interval.
     running = current_balance + pending_current_delta
+    lowest_balance, lowest_balance_date = running, today
+    runway_date: date | None = today if running < 0 else None
     cursor_d = today
     while cursor_d < end:
         cursor_d = cursor_d + timedelta(days=1)
@@ -1767,6 +1831,10 @@ async def get_cash_flow_report(
         daily_balance[cursor_d] = running
         daily_inflow[cursor_d] = bucket["inflow"]
         daily_outflow[cursor_d] = bucket["outflow"]
+        if running < lowest_balance:
+            lowest_balance, lowest_balance_date = running, cursor_d
+        if runway_date is None and running < 0:
+            runway_date = cursor_d
 
     # 5. Aggregate to interval.
     points = _date_points(chart_start, end, interval)
@@ -1865,6 +1933,9 @@ async def get_cash_flow_report(
         forecast_start_date=_format_date_label(today, interval),
         baseline_active=baseline,
         baseline_lookback_days=baseline_lookback_days if baseline else None,
+        runway_date=runway_date.isoformat() if runway_date else None,
+        lowest_balance=round(lowest_balance, 2),
+        lowest_balance_date=lowest_balance_date.isoformat(),
     )
 
     composition: list[ReportCompositionItem] = []

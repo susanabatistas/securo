@@ -1,3 +1,4 @@
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.auth import current_active_user
@@ -13,13 +14,21 @@ def _ensure_bcb_enabled() -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="BCB integration disabled")
 
 
+def _bcb_unavailable(exc: Exception) -> HTTPException:
+    # BCB being down or unreachable is an upstream failure, not ours.
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not reach BCB")
+
+
 @router.get("/cdi-12m")
 async def cdi_12m(
     user: User = Depends(current_active_user),
 ):
     """Trailing 12-month accumulated CDI (%), compounded from BCB SGS série 4390."""
     _ensure_bcb_enabled()
-    value = await get_bcb_provider().get_cdi_accumulated(months=12)
+    try:
+        value = await get_bcb_provider().get_cdi_accumulated(months=12)
+    except (requests.RequestException, ValueError) as exc:
+        raise _bcb_unavailable(exc) from exc
     if value is None:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not fetch CDI from BCB")
     return {"cdi_12m_pct": float(value)}
@@ -35,7 +44,10 @@ async def cdi_monthly(
     comparison line rebased to the portfolio chart's own selected window,
     since that window (3M/6M/1Y/ALL) isn't known server-side."""
     _ensure_bcb_enabled()
-    quotes = await get_bcb_provider().get_cdi_monthly_series(months=months)
+    try:
+        quotes = await get_bcb_provider().get_cdi_monthly_series(months=months)
+    except (requests.RequestException, ValueError) as exc:
+        raise _bcb_unavailable(exc) from exc
     return [{"date": q.date.isoformat(), "rate_pct": float(q.value)} for q in quotes]
 
 
@@ -45,7 +57,10 @@ async def usd_brl(
 ):
     """Latest USD/BRL PTAX (sell) rate from BCB SGS série 1."""
     _ensure_bcb_enabled()
-    quote = await get_bcb_provider().get_usd_brl_ptax()
+    try:
+        quote = await get_bcb_provider().get_usd_brl_ptax()
+    except (requests.RequestException, ValueError) as exc:
+        raise _bcb_unavailable(exc) from exc
     if quote is None:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not fetch USD/BRL PTAX from BCB")
     return {"rate": float(quote.value), "as_of": quote.date.isoformat(), "source": "bcb_ptax"}

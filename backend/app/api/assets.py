@@ -14,6 +14,7 @@ from app.core.workspace_context import (
     current_workspace,
     current_writable_workspace,
 )
+from app.models.asset import ASSET_PRICE_DECIMALS
 from app.models.user import User
 from app.providers.market_price import (
     MarketPriceRateLimitedError,
@@ -64,7 +65,7 @@ from app.services import (
     ir_estimator_service,
     stock_checklist_service,
 )
-from app.services.fx_rate_service import convert, get_rate
+from app.services.fx_rate_service import convert, convert_or_none, get_rate
 
 logger = logging.getLogger(__name__)
 
@@ -182,18 +183,25 @@ async def refresh_asset_price(
 
     # Stamp the primary-currency fields so the refresh response has the same
     # shape as the list endpoint — the React Query cache update needs them
-    # to keep the row rendering consistent (BRL rollup, gain/loss).
+    # to keep the row rendering consistent (BRL rollup, gain/loss). When no
+    # FX rate can be resolved the fields stay NULL: the UI then shows the
+    # native value flagged as unconverted instead of a fake 1:1 number
+    # (issue #574).
     primary_currency = ctx.user.primary_currency
     if refreshed.currency != primary_currency and refreshed.current_value is not None:
-        converted, _ = await convert(
+        converted, _ = await convert_or_none(
             session, Decimal(str(refreshed.current_value)), refreshed.currency, primary_currency,
+            decimals=ASSET_PRICE_DECIMALS,
         )
-        refreshed.current_value_primary = float(converted)
-        if refreshed.gain_loss is not None:
-            gl_converted, _ = await convert(
-                session, Decimal(str(refreshed.gain_loss)), refreshed.currency, primary_currency,
-            )
-            refreshed.gain_loss_primary = float(gl_converted)
+        if converted is not None:
+            refreshed.current_value_primary = float(converted)
+            if refreshed.gain_loss is not None:
+                gl_converted, _ = await convert_or_none(
+                    session, Decimal(str(refreshed.gain_loss)), refreshed.currency, primary_currency,
+                    decimals=ASSET_PRICE_DECIMALS,
+                )
+                if gl_converted is not None:
+                    refreshed.gain_loss_primary = float(gl_converted)
     return refreshed
 
 
@@ -274,16 +282,24 @@ async def _populate_primary_amounts(
     conversion loop.
     """
     for asset in assets:
+        # convert_or_none leaves current_value_primary NULL when no FX rate
+        # can be resolved, instead of stamping a fake 1:1 value. The UI
+        # shows the native amount flagged as unconverted and keeps it out
+        # of primary-currency totals (issue #574).
         if asset.currency != primary_currency and asset.current_value is not None:
-            converted, _ = await convert(
+            converted, _ = await convert_or_none(
                 session, Decimal(str(asset.current_value)), asset.currency, primary_currency,
+                decimals=ASSET_PRICE_DECIMALS,
             )
-            asset.current_value_primary = float(converted)
-            if asset.gain_loss is not None:
-                gl_converted, _ = await convert(
-                    session, Decimal(str(asset.gain_loss)), asset.currency, primary_currency,
-                )
-                asset.gain_loss_primary = float(gl_converted)
+            if converted is not None:
+                asset.current_value_primary = float(converted)
+                if asset.gain_loss is not None:
+                    gl_converted, _ = await convert_or_none(
+                        session, Decimal(str(asset.gain_loss)), asset.currency, primary_currency,
+                        decimals=ASSET_PRICE_DECIMALS,
+                    )
+                    if gl_converted is not None:
+                        asset.gain_loss_primary = float(gl_converted)
         await _stamp_fx_rate_used(session, asset, primary_currency)
 
 
